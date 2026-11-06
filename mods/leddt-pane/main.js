@@ -98,7 +98,9 @@ export default class Pane extends View {
       .tooltip(`Context: ${fmtTokens(c.total)} of ${fmtTokens(c.window)} tokens`)
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        openOverlay({ mod: "leddt-context", kind: "popup", width: 280, height: 340, props: { terminal } });
+        // Size per the popover's mode (keep in sync with leddt-context's SIZES).
+        const size = shared("leddt-context.mode") === "detailed" ? { width: 320, height: 540 } : { width: 280, height: 340 };
+        openOverlay({ mod: "leddt-context", kind: "popup", ...size, props: { terminal } });
       })
       .child(div().w(28).h(4).rounded(2).bg(t.raised)
         .child(div().h_full().rounded(2).bg(color).w(`${Math.max(pct, 3)}%`).transition("width", 400)))

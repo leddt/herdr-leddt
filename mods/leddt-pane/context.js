@@ -33,7 +33,7 @@ export async function readContext(sessionId) {
     const total = m.postTokens ?? 0;
     return { sessionId, title, model: null, total, window: contextWindow(null, m.preTokens ?? 0),
       input: null, cacheRead: null, cacheWrite: null, output: null,
-      compacted: { pre: m.preTokens ?? null, trigger: m.trigger ?? null }, at: d.timestamp ?? null };
+      compacted: { pre: m.preTokens ?? null, trigger: m.trigger ?? null }, at: d.timestamp ?? null, cwd: d.cwd ?? null };
   }
   const u = d.message?.usage;
   if (!u) return null;
@@ -42,7 +42,7 @@ export async function readContext(sessionId) {
   const total = input + cacheRead + cacheWrite + output;
   const model = d.message.model ?? null;
   return { sessionId, title, model, total, window: contextWindow(model, total),
-    input, cacheRead, cacheWrite, output, compacted: null, at: d.timestamp ?? null };
+    input, cacheRead, cacheWrite, output, compacted: null, at: d.timestamp ?? null, cwd: d.cwd ?? null };
 }
 
 export function contextColor(t, pct) {
