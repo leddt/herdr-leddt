@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and four of the mods are clones of shipped ones, and the other three mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and five of the mods are clones of shipped ones, and the other three mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -11,15 +11,21 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 
 | Block | `main` | `leddt` |
 |---|---|---|
+| Sidebar spaces list (`spaces`) | `spaces` | `leddt-spaces` |
 | Sidebar agents list (`agents`) | `agents` | `leddt-agents` |
 | Sidebar, below the lists | — | **new** `leddt-usage` block (64px) |
 | Tab bar (`tabs`) | `tabs` | `leddt-tabs` |
 | Pane header | `pane` | `leddt-pane` |
 | Right panel, Files (`files`) | `files` | `leddt-files` |
 
-Everything else (`workspace-chrome`, `spaces`, `changes`, `workspace-status`) is still the shipped mod.
+Everything else (`workspace-chrome`, `changes`, `workspace-status`) is still the shipped mod.
 
 ## Cloned mods
+
+### `leddt-spaces` (from `spaces`)
+
+- **Two-line rows** (42px instead of 30px). The first line is the space name. The second line is the current branch of the space's first terminal, or the repo name when HEAD is detached, or the folder when it isn't a repo. Ahead/behind stays at the right of the second line.
+- **Pull request number** at the right of the first line, when the branch has an open PR. Click it to open the PR in the browser. Drafts are dimmed. The provider comes from the `origin` URL: GitHub uses `gh pr list`, and Azure DevOps (`dev.azure.com`, `*.visualstudio.com`, SSH or HTTPS) uses `az repos pr list`, which needs the `azure-devops` extension. The lookup runs whenever the shipped mod refreshes git (at most every 30s per branch), one at a time and apart from git, because `az` takes several seconds.
 
 ### `leddt-agents` (from `agents`)
 
@@ -45,7 +51,7 @@ These only show for panes running Claude Code:
 
 - **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
 
-The icon paths in all four clones point at their own folder instead of the shipped mod's.
+The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
 
 ## New mods
 
