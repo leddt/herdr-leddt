@@ -174,7 +174,7 @@ export default class Jira extends View {
     const names = sorted.map(v => v.name);
     const chip = (id, on, label, dot, action) =>
       h_flex().id(id).h(22).px(8).gap(5).flex_none().items_center().rounded(11).text_size(11)
-        .border(1).border_color(on ? t.border : t.surface).bg(on ? t.raised : t.surface)
+        .border(1).border_color(on ? t.border : t.background).bg(on ? t.raised : t.background)
         .text_color(on ? t.foreground : t.dim).hover(s => s.bg(t.hover)).cursor_pointer()
         .on_click((_e, cx) => { action(); cx.notify(); })
         .when(!!dot, el => el.child(div().size(6).rounded(3).flex_none().bg(dot).opacity(on ? 1 : 0.4)))
@@ -240,10 +240,11 @@ export default class Jira extends View {
     const total = this.issues?.length;
     const shown = this.issues?.filter(i => this.passes(i)).length;
     const count = total == null ? null : shown === total ? String(total) : `${shown} / ${total}`;
-    return h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(svg("mods/leddt-jira/jira.svg").size(14).text_color(t.muted))
-      .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child("Mes tâches"))
-      .when(count != null, el => el.child(div().text_size(11).text_color(t.dim).child(count)))
+    // Same header as the shipped Files and Changes panels: 42px, title, a bordered count.
+    return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+      .child(div().font_semibold().child("Mes tâches"))
+      .when(count != null, el => el.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border)
+        .text_size(10).text_color(t.muted).child(count)))
       .child(div().flex_1())
       .when(this.filtered(), el => el.child(div().id("reset-filters").flex_none().text_size(11).text_color(t.accent)
         .cursor_pointer().hover(s => s.underline())
@@ -335,7 +336,7 @@ export default class Jira extends View {
       : target.terminal ? `dans ${program?.name ?? "l'agent"} à l'écran`
       : `dans un nouvel onglet ${program.name}`;
     return h_flex().id(`agent-${action.id}-${issue.key}`).h(18).px(6).gap(4).flex_none().items_center().rounded(5)
-      .text_size(10.5).text_color(t.muted).border(1).border_color(t.border).bg(t.surface)
+      .text_size(10.5).text_color(t.muted).border(1).border_color(t.border).bg(t.background)
       .hover(s => s.bg(t.raised).text_color(t.foreground))
       .tooltip(`${action.label} : ${where}\nShift+clic : nouvel onglet ${this.defaultAgent().name}`)
       // Shift+click always starts a new tab of the default agent, whatever is on screen.
@@ -441,7 +442,9 @@ export default class Jira extends View {
     // A status drag released off the chips, or leaving the panel, is cancelled.
     const cancelDrag = cx => { if (this.drag) { this.drag = this.dragOver = this.ghost = null; cx.notify(); } };
     const g = this.ghost;
-    return v_flex().id("root").relative().size_full().bg(t.surface)
+    // A card like the shipped Files and Changes panels: rounded, bordered, the terminals' background.
+    return v_flex().id("root").relative().size_full().min_h(0).rounded(10).overflow_hidden()
+      .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .on_mouse_up("left", (_e, cx) => cancelDrag(cx))
       .on_hover((hovered, cx) => { if (!hovered) cancelDrag(cx); })
       // While dragging (only then: each move redraws), the ghost follows the pointer.
