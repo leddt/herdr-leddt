@@ -8,7 +8,7 @@ HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 REPO="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="leddt"
 
-mkdir -p "$REPO/layouts" "$REPO/mods"
+mkdir -p "$REPO/layouts" "$REPO/mods" "$REPO/themes"
 
 # Layout: leddt.json plus any preview (leddt.svg / leddt.png). Not .state (Herdr's click memory).
 rsync -a --delete \
@@ -22,6 +22,12 @@ rsync -a --delete \
   --include="$PREFIX-*/" --include="$PREFIX-*/**" --exclude='*' \
   "$HOME_DIR/mods/" "$REPO/mods/"
 
+# Themes: every leddt-*.json.
+rsync -a --delete \
+  --include="$PREFIX-*.json" --exclude='*' \
+  "$HOME_DIR/themes/" "$REPO/themes/"
+
 echo "Synced from $HOME_DIR:"
 ls "$REPO/layouts" | sed 's/^/  layouts\//'
 ls "$REPO/mods" | sed 's/^/  mods\//'
+ls "$REPO/themes" | sed 's/^/  themes\//'

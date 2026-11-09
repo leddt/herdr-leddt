@@ -1,7 +1,7 @@
 # herdr-leddt
 
-My customizations to the [Herdr app](https://gpui-kit.com): a layout and a set of mods, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and four of the mods are clones of shipped ones, and the other three are new.
+My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
+They're built on Herdr 0.1.13. The layout and four of the mods are clones of shipped ones, and the other three mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -63,3 +63,7 @@ The popover that opens from the context chip in `leddt-pane`. It has two modes, 
 ### `leddt-split`
 
 A dialog that asks for a tab name, then opens a new tab running Claude with a shell split to its right. Both start in the space's current folder. Press Enter to create the tab or Esc to cancel.
+
+## Theme: `themes/leddt-solarized-light.json`
+
+A light theme built from the [Solarized](https://ethanschoonover.com/solarized/) Light palette. The terminal uses `base3` as its background, and the sidebars and bars use `base2`. The accent is blue. Status colours: working is yellow, blocked is red, done is green. Changes from the original scheme, all for readability: body text is `base01` instead of `base00`. Every ANSI hue is darkened (same hue, scaled toward black) to at least 4.5:1 against the background; the originals were as low as 2.9:1 for yellow, cyan and green. The bright ANSI colours keep their hues instead of turning into greys. ANSI white is `base1`, so "white" text stays visible, and the selection is a bit darker than `base2`. Pick it from the theme menu.
