@@ -6,7 +6,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared } from "herdr";
+import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared, window } from "herdr";
 import { readContext, contextColor, fmtTokens } from "./context.js";
 
 function icon(p, size, color) {
@@ -20,25 +20,58 @@ function folder(cwd) {
   return cwd === h ? "~" : cwd.startsWith(h + "/") ? "~" + cwd.slice(h.length) : cwd;
 }
 
+const platform = () => window().platform;
+
+// Direct children of these pids, one per line. No pgrep on Windows: ask WMI.
+function childPids(pids) {
+  if (platform() === "windows") {
+    const filter = pids.map((p) => `ParentProcessId=${p}`).join(" OR ");
+    return exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `Get-CimInstance Win32_Process -Filter '${filter}' | ForEach-Object ProcessId`]);
+  }
+  return exec("pgrep", ["-P", pids.join(",")]);
+}
+
+async function sessionAt(pid) {
+  const text = await readTextFile(`${home()}/.claude/sessions/${pid}.json`);
+  try { return text ? JSON.parse(text).sessionId ?? null : null; } catch { return null; }
+}
+
+// Claude's pid per terminal, so the 5 s refresh reads one file instead of
+// walking processes (a PowerShell start on Windows) every time.
+const claudePid = new Map();
+
 // The Claude Code session running in a terminal: its foreground process's pid
 // names ~/.claude/sessions/<pid>.json, which holds the sessionId.
 async function claudeSession(terminal) {
+  const known = claudePid.get(terminal);
+  if (known) {
+    const id = await sessionAt(known);
+    if (id) return id;
+    claudePid.delete(terminal);
+  }
   const r = await hc(["get", terminal, "--json"]);
   const t = JSON.parse(r.stdout || "{}");
-  // Claude often runs under a shell wrapper (fish -c 'command claude'), so
-  // also try the terminal's descendants, a few levels down.
+  // Claude often runs under a shell wrapper (fish -c 'command claude', or the
+  // pwsh that's the terminal's foreground on Windows), so also try the
+  // terminal's descendants, a few levels down.
   const pids = [...new Set([t.foreground?.pid, t.pid].filter(Boolean))];
   for (let i = 0, level = pids.slice(); i < 3 && level.length; i++) {
-    const r = await exec("pgrep", ["-P", level.join(",")]).catch(() => null);
-    level = (r?.stdout ?? "").split("\n").map(Number).filter((n) => n && !pids.includes(n));
+    const r = await childPids(level).catch(() => null);
+    level = (r?.stdout ?? "").split(/\r?\n/).map(Number).filter((n) => n && !pids.includes(n));
     pids.push(...level);
   }
   for (const pid of pids) {
-    const text = await readTextFile(`${home()}/.claude/sessions/${pid}.json`);
-    if (!text) continue;
-    try { const s = JSON.parse(text); if (s.sessionId) return s.sessionId; } catch {}
+    const id = await sessionAt(pid);
+    if (id) { claudePid.set(terminal, pid); return id; }
   }
   return null;
+}
+
+function openUrl(url) {
+  const p = platform();
+  if (p === "windows") return exec("explorer.exe", [url]);
+  return exec(p === "macos" ? "open" : "xdg-open", [url]);
 }
 
 async function openInDesktop(terminal) {
@@ -48,7 +81,7 @@ async function openInDesktop(terminal) {
       notify({ title: "No Claude session found", body: `Couldn't find the session running in ${terminal}.`, level: "warning" });
       return;
     }
-    await exec("xdg-open", [`claude://resume?session=${id}`]);
+    await openUrl(`claude://resume?session=${id}`);
   } catch (e) {
     notify({ title: "Couldn't open Claude Desktop", body: String(e?.message ?? e), level: "error" });
   }

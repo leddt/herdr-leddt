@@ -14,7 +14,9 @@ const key = () => JSON.stringify(location());
 async function openInZed(folder) {
   try {
     const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder }).catch(() => null);
-    await exec("zeditor", [top?.code === 0 && top.stdout.trim() ? top.stdout.trim() : folder]);
+    const target = top?.code === 0 && top.stdout.trim() ? top.stdout.trim() : folder;
+    // Zed's CLI is "zeditor" on Linux packages and "zed" elsewhere (Windows, macOS).
+    await exec("zeditor", [target]).catch(() => exec("zed", [target]));
   } catch (e) { console.log("Open in Zed failed:", String(e)); }
 }
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
