@@ -1,13 +1,14 @@
-// Workspace spaces: stable colored avatars, worktrees under their checkout,
+// Workspace spaces: the project's icon or a stable colored avatar, worktrees under their checkout,
 // grouped by machine when more than one is known. Two lines per space: its name
 // (and its branch's open pull request, GitHub or Azure DevOps, on the right), then
 // the branch its first terminal is on now (else the repo, else the folder) with
 // ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, home } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, home, appHome, nextCommand } from "herdr";
+import * as fs from "fs/promises";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -89,6 +90,99 @@ async function findPr(f, branch, cwd, on) {
   return { number: pr.pullRequestId, url, draft: !!pr.isDraft };
 }
 
+// Avatars can be the project's icon. Each space's choice, set from its menu (leddt-menu):
+// { [space]: "letter" | { file } }; none: the icon found in its repo, else the letter.
+const ICONS = "leddt-spaces.icons";
+// image() only reads under the Herdr home, so icons are copied there (by a hash of where they came from).
+const ICON_DIR = "data/leddt-spaces-icons";
+const IMAGE = /\.(svg|png|ico|jpe?g|webp|gif|bmp)$/i;
+// Folders whose icons are someone else's (packages, tools, tests, build output).
+const NOT_MINE = /^(node_modules|vendor|third_party|3rdparty|bower_components|packages|app_plugins|umbraco|umbraco_client|tests?|__tests__|spec|fixtures|mocks?|examples?|samples?|bin|obj|dist|build|out|target)$/i;
+const iconKey = (on, path) => JSON.stringify([on ?? null, path]);
+
+function hash(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(16).padStart(8, "0");
+}
+
+// How sure a tracked file is the project's icon, by its name; 0: not an icon of the project.
+export function iconScore(path, repo) {
+  const parts = path.split("/");
+  if (parts.slice(0, -1).some((p) => p.startsWith(".") || NOT_MINE.test(p))) return 0;
+  const file = parts[parts.length - 1].toLowerCase();
+  const ext = file.slice(file.lastIndexOf(".") + 1);
+  const name = file.slice(0, file.lastIndexOf("."));
+  const r = (repo ?? "").toLowerCase();
+  let s = 0, m;
+  if (name === "favicon") s = 100;
+  else if (/^apple-touch-icon(-precomposed)?$/.test(name)) s = 96;
+  else if ((m = /^(?:android-chrome|icon|favicon)[-_](\d+)(?:x\d+)?$/.exec(name))) s = 84 + Math.min(+m[1], 256) / 32;
+  else if (/^apple-touch-icon-\d+x\d+$/.test(name)) s = 88;
+  else if (/^(app[-_]?icon|icon)$/.test(name)) s = 82;
+  else if (/^logo(192|512)?$/.test(name)) s = 75;
+  else if (r && (name === `logo-${r}` || name === `logo_${r}` || name === `logo__${r}` || name === `${r}-logo` || name === r)) s = 74;
+  if (!s) return 0;
+  s += { svg: 6, png: 4, webp: 3, jpg: 2, jpeg: 2, gif: 1, bmp: 1 }[ext] ?? 0;
+  return s - 2 * (parts.length - 1);
+}
+
+// The project's icon in a repo: the best-named tracked image, or null when none is conclusive.
+async function findIcon(top, repo, on) {
+  const r = await exec("git", ["ls-files", "-z", "--", ":(icase)*favicon*", ":(icase)*icon*", ":(icase)*logo*", ...(repo ? [`:(icase)*${repo}.*`] : [])], { cwd: top, on });
+  if (r.code !== 0) return null;
+  let best = null, score = 0;
+  for (const f of r.stdout.split("\0")) {
+    if (!IMAGE.test(f)) continue;
+    const s = iconScore(f, repo);
+    if (s > score) [best, score] = [f, s];
+  }
+  return best && `${top}/${best}`;
+}
+
+// Copies an icon (on this computer) under the Herdr home; answers its path for image(), or null.
+async function copyIcon(src) {
+  const ext = (/\.([a-z0-9]+)$/i.exec(src)?.[1] ?? "png").toLowerCase();
+  const rel = `${ICON_DIR}/${hash(src)}.${ext}`;
+  const dst = `${appHome()}/${rel}`;
+  await fs.mkdir(`${appHome()}/${ICON_DIR}`, { recursive: true });
+  // fs reads only under the home folder; a project can be anywhere.
+  const win = (s) => s.replace(/\//g, "\\");
+  const r = window()?.platform === "windows"
+    ? await exec("cmd", ["/d", "/c", "copy", "/y", win(src), win(dst)])
+    : await exec("cp", [src, dst]);
+  return r.code === 0 ? rel : null;
+}
+
+// The system's file picker (this computer): the chosen file, or null.
+async function pickFile(start) {
+  const p = window()?.platform;
+  const q = (s) => (s ?? "").replace(/'/g, "''");
+  let r;
+  if (p === "windows") {
+    const script = "Add-Type -AssemblyName System.Windows.Forms;"
+      + "$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false };"
+      + "$d = New-Object System.Windows.Forms.OpenFileDialog;"
+      + "$d.Title = 'Choose an icon';"
+      + "$d.Filter = 'Images|*.svg;*.png;*.ico;*.jpg;*.jpeg;*.webp;*.gif;*.bmp|All files|*.*';"
+      + `$d.InitialDirectory = '${q((start ?? "").replace(/\//g, "\\"))}';`
+      + "if ($d.ShowDialog($o) -eq 'OK') { [Console]::Out.Write($d.FileName) }";
+    r = await exec("powershell", ["-NoProfile", "-STA", "-Command", script], { timeout: 600000 });
+  } else if (p === "macos") {
+    const at = start ? ` default location (POSIX file "${start.replace(/["\\]/g, "\\$&")}")` : "";
+    r = await exec("osascript", ["-e", `POSIX path of (choose file with prompt "Choose an icon"${at})`], { timeout: 600000 });
+  } else {
+    try {
+      r = await exec("zenity", ["--file-selection", "--title=Choose an icon", ...(start ? [`--filename=${start}/`] : []),
+        "--file-filter=Images | *.svg *.png *.ico *.jpg *.jpeg *.webp *.gif *.bmp", "--file-filter=All files | *"], { timeout: 600000 });
+    } catch {
+      r = await exec("kdialog", ["--getopenfilename", start || home()], { timeout: 600000 });
+    }
+  }
+  const file = r.code === 0 ? r.stdout.trim() : "";
+  return file ? file.replace(/\\/g, "/") : null;
+}
+
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -116,6 +210,9 @@ export default class Spaces extends View {
     this.prAt = {}; // prKey() -> when it was last looked for
     this.prPending = new Map(); // prKey() -> where to ask
     this.forges = {}; // repo -> forge() of its origin, null: neither
+    this.found = {}; // iconKey(on, top) -> the repo's icon file, null: none conclusive
+    this.icons = {}; // iconKey(on, file) -> its copy for image(), null: couldn't copy; absent: not yet
+    this.copying = new Set();
     // Spaces made while this runs wait (at most a moment) for their git, so a
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
@@ -131,9 +228,60 @@ export default class Spaces extends View {
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+    // The space menu's icon items (leddt-menu): "icon-<pick|auto|letter>:<space>".
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const m = /^icon-(pick|auto|letter):(.+)$/.exec(await nextCommand());
+        if (m) await this.setIcon(m[1], decodeURIComponent(m[2]), cx);
+      }
+    });
+  }
+
+  async setIcon(what, id, cx) {
+    let choice = what === "letter" ? "letter" : null;
+    if (what === "pick") {
+      const s = spaces().find((x) => x.id === id);
+      const g = s && this.git[where(s, panes())];
+      // The picker is this computer's: it starts in the project when the space is here.
+      const file = await pickFile(s && !s.machine ? g?.top ?? place(s, panes()) : home()).catch(() => null);
+      if (!file) return;
+      choice = { file };
+      delete this.icons[iconKey(null, file)]; // copied again: it may have changed
+    }
+    const all = { ...(shared(ICONS) ?? {}) };
+    if (choice) all[id] = choice;
+    else delete all[id];
+    setShared(ICONS, all);
+    this.copyIcons(cx);
+  }
+
+  // The icon a space shows: { key, on, file } of its source, or null for the letter.
+  iconSource(s, g) {
+    const choice = (shared(ICONS) ?? {})[s.id];
+    if (choice === "letter") return null;
+    if (choice?.file) return { key: iconKey(null, choice.file), on: null, file: choice.file };
+    const file = g?.top ? this.found[iconKey(s.machine, g.top)] : null;
+    return file ? { key: iconKey(s.machine, file), on: s.machine ?? null, file } : null;
+  }
+
+  // Copies the icons shown but not copied yet, one at a time.
+  copyIcons(cx) {
+    const ps = panes();
+    for (const s of spaces()) {
+      const src = this.iconSource(s, this.git[where(s, ps)]);
+      // Another machine's files aren't copied here: its spaces keep their letter.
+      if (!src || src.on || src.key in this.icons || this.copying.has(src.key)) continue;
+      this.copying.add(src.key);
+      cx.spawn(async (cx) => {
+        this.icons[src.key] = await copyIcon(src.file).catch(() => null);
+        this.copying.delete(src.key);
+        cx.notify();
+      });
+    }
   }
 
   checkNew(cx) {
+    this.copyIcons(cx);
     const now = Date.now();
     const sp = spaces();
     for (const s of sp) if (!this.shown.has(s.id)) this.born[s.id] ??= now;
@@ -274,7 +422,10 @@ export default class Spaces extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, top: top.stdout.trim(), branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      // The project's icon, once per checkout (here only: see copyIcons).
+      const ik = iconKey(on, info.top);
+      if (!on && info.top && !(ik in this.found)) this.found[ik] = await findIcon(info.top, name, on).catch(() => null);
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.ab ")) {
@@ -338,7 +489,7 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
+    openOverlay({ mod: "leddt-menu", kind: "popup", width: 200, height: 340, props: { tab: "space", target: { id: w.id } } });
   }
 
   orderingDue(now) {
@@ -486,6 +637,11 @@ export default class Spaces extends View {
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
     const pr = g?.branch ? this.prs[prKey(g)] : null;
+    const src = this.iconSource(w, g);
+    const icon = src ? this.icons[src.key] : null;
+    const avatar = icon
+      ? image(icon).size(18).flex_none().rounded(4)
+      : h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
@@ -531,7 +687,7 @@ export default class Spaces extends View {
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).flex_none().text_color(t.dim)))
-          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
+          .when(!tree, el => el.child(avatar))
           .child(v_flex().flex_1().min_w(0).gap(1)
             .child(h_flex().min_w(0).gap(6).items_center()
               .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(w.name))

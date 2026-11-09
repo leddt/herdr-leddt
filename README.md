@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and five of the mods are clones of shipped ones, and the other four mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and six of the mods are clones of shipped ones, and the other four mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -27,6 +27,8 @@ Everything else (`workspace-chrome`, `changes`, `workspace-status`) is still the
 
 - **Two-line rows** (42px instead of 30px). The first line is the space name. The second line is the current branch of the space's first terminal, or the repo name when HEAD is detached, or the folder when it isn't a repo. Ahead/behind stays at the right of the second line.
 - **Pull request number** at the right of the first line, when the branch has an open PR. Click it to open the PR in the browser. Drafts are dimmed. The provider comes from the `origin` URL: GitHub uses `gh pr list`, and Azure DevOps (`dev.azure.com`, `*.visualstudio.com`, SSH or HTTPS) uses `az repos pr list`, which needs the `azure-devops` extension. The lookup runs whenever the shipped mod refreshes git (at most every 30s per branch), one at a time and apart from git, because `az` takes several seconds.
+- **Project icon as the avatar.** When a space's checkout is a git repo, the mod looks through its tracked files (`git ls-files`) for an image (svg, png, ico, jpg, webp, gif, bmp) with a common icon name. The best match wins: `favicon`, then `apple-touch-icon`, sized favicons (`favicon-32x32`, `android-chrome-192x192`…), `icon` / `app-icon`, `logo` / `logo192`, and `logo-<repo>`. SVG and PNG come before ICO, and shallower files before deeper ones. It skips dot-folders and folders that hold other people's or generated files (`node_modules`, `vendor`, `App_Plugins`, `Umbraco`, tests, fixtures, examples, `bin`, `obj`, `dist`, `build`…). If nothing matches, the coloured letter stays. Herdr's `image()` only reads under its home, so the icon is copied to `<Herdr home>/data/leddt-spaces-icons/`. Spaces on another machine keep their letter.
+- **Right-click → Choose icon…** opens the system file picker (PowerShell's dialog on Windows, `osascript` on macOS, `zenity` or `kdialog` on Linux) to use a specific file. **Use letter avatar** goes back to the coloured letter, and **Use project icon** goes back to automatic detection. The choice is per space, in the shared value `leddt-spaces.icons`. The menu is `leddt-menu`, and it reaches this mod through `leddt-spaces.icon-<pick|auto|letter>:<space>` commands.
 
 ### `leddt-agents` (from `agents`)
 
@@ -52,6 +54,10 @@ These only show for panes running Claude Code:
 ### `leddt-files` (from `files`)
 
 - **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
+
+### `leddt-menu` (from `menu`)
+
+- **Icon items** in a space's menu, opened only from `leddt-spaces`: **Choose icon…**, plus **Use project icon** and **Use letter avatar** when they would change something. They have their own `image.svg` icon. Tab and terminal menus still use the shipped `menu`.
 
 The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
 
