@@ -46,7 +46,7 @@ These only show for panes running Claude Code:
 
 ### `leddt-tabs` (from `tabs`)
 
-- **"New Claude Split" button** after the tabs. It opens the `leddt-split` dialog.
+- **"New Split Tab" button** after the tabs, with the pane header's split-right icon. It opens the `leddt-split` dialog.
 - **"Jira" panel button** next to Files and Changes. It's always shown (it isn't one of the welcome screen's `workspace.panels`), and it's remembered per space like the others.
 
 ### `leddt-files` (from `files`)
@@ -84,7 +84,7 @@ A right-panel block that lists the Jira issues assigned to you that aren't done 
 
 ### `leddt-split`
 
-A dialog that asks for a tab name, then opens a new tab running Claude with a shell split to its right. Both start in the space's current folder. Press Enter to create the tab or Esc to cancel.
+A dialog that asks for a tab name, then opens a new tab running the most used agent (the first installed one in `knownAgents()`, Claude if none) with a shell split to its right. Both start in the space's current folder. Press Enter to create the tab or Esc to cancel.
 
 ## Theme: `themes/leddt-solarized-light.json`
 
