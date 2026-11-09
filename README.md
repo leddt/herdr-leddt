@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and five of the mods are clones of shipped ones, and the other three mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and five of the mods are clones of shipped ones, and the other four mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -17,6 +17,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Tab bar (`tabs`) | `tabs` | `leddt-tabs` |
 | Pane header | `pane` | `leddt-pane` |
 | Right panel, Files (`files`) | `files` | `leddt-files` |
+| Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
 
 Everything else (`workspace-chrome`, `changes`, `workspace-status`) is still the shipped mod.
 
@@ -46,6 +47,7 @@ These only show for panes running Claude Code:
 ### `leddt-tabs` (from `tabs`)
 
 - **"New Claude Split" button** after the tabs. It opens the `leddt-split` dialog.
+- **"Jira" panel button** next to Files and Changes. It's always shown (it isn't one of the welcome screen's `workspace.panels`), and it's remembered per space like the others.
 
 ### `leddt-files` (from `files`)
 
@@ -65,6 +67,18 @@ The popover that opens from the context chip in `leddt-pane`. It has two modes, 
 
 - **Simple:** the latest usage from the transcript: total, window, and what the last step added.
 - **Detailed:** runs Claude Code's own `/context` on a forked, unsaved copy of the session (no API call, about 1s) and shows the breakdown by category.
+
+### `leddt-jira`
+
+A right-panel block that lists the Jira issues assigned to you that aren't done (`assignee = currentUser() AND statusCategory != Done`). Open it with the **Jira** button in the tab bar.
+
+- **Grouping:** by project (sorted by name), then by status inside each project, in the status bar's order. Issues within a status are sorted by last update. Projects and status sub-groups fold on click.
+- **Rows:** the summary, then the issue type as a small outlined tag and the key; the tooltip adds the status. Click a row to open the issue in the browser. The tag is tinted by type name, in English or French: bug red, epic magenta, story green, sub-task cyan, task accent, anything else neutral.
+- **Filter bars** under the header: **Statut** (a chip per status in the results) and **Type** (a chip per issue type, by name, with its tag colour). Click a chip to show or hide those issues; hidden chips are dimmed. A chip's count is what it would show given the other bar's filter. The header shows `shown / total`.
+- **Status order:** drag a status chip (press on one, release on another) and it takes that one's place. The dragged chip fades, a ghost copy follows the pointer once it has moved a few px, and the target is outlined; releasing elsewhere or leaving the panel cancels. The order also orders the sub-groups in every project. By default, and for statuses it doesn't know yet (they go after), it's in-progress first (yellow dot), then to-do, then by name.
+- **Reset filters:** a link in the header, shown when something is hidden or the order was changed. It shows every status and type again and goes back to the automatic order. Folds are kept.
+- **Remembered:** hidden statuses and types (by name, across projects), the status order and the folds, in the mod's `localStorage` (`<Herdr home>/data/leddt-jira/store.json`). One set for the whole window, not per space, and not in this repo.
+- **Data:** runs the `twg` CLI (`twg jira workitem query --jql ... -o json`), so it uses twg's own sign-in and site and holds no token. `twg` has to be on the PATH and signed in. It reads up to 5 pages of 100 issues; each call takes about 2s. It refreshes when the panel loads, every 2 minutes (even while the panel is hidden), and with ↻ in the header. If twg fails, its first error line shows under the header.
 
 ### `leddt-split`
 

@@ -150,6 +150,13 @@
                       "content": {
                         "mod": "changes"
                       }
+                    },
+                    {
+                      "id": "jira",
+                      "type": "block",
+                      "content": {
+                        "mod": "leddt-jira"
+                      }
                     }
                   ],
                   "active": "files"
