@@ -1,8 +1,9 @@
 // Jira issues assigned to me that aren't done, grouped by project.
 // Asks the twg CLI (already signed in to Atlassian), so the mod holds no token.
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { theme, exec, window } from "herdr";
+import { theme, exec, panes } from "herdr";
+import { ACTIONS, FALLBACK_AGENT, installedAgents, visibleAgents, writePrompt } from "./agent.js";
 
 const JQL = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
 const FIELDS = "summary,status,project,issuetype,updated";
@@ -15,12 +16,6 @@ const FILTERS = {
   type: { label: "Type", storage: "hiddenTypes" },
 };
 
-function openUrl(url) {
-  const p = window()?.platform;
-  if (p === "windows") return exec("explorer.exe", [url]);
-  return exec(p === "macos" ? "open" : "xdg-open", [url]);
-}
-
 // One page of `twg jira workitem query`. (--select would drop pageInfo, so the full payload.)
 async function page(after) {
   const args = ["jira", "workitem", "query", "--jql", JQL, "--fields", FIELDS, "--limit", "100",
@@ -29,7 +24,7 @@ async function page(after) {
   try { r = await exec("twg", args, { timeout: 60000 }); }
   catch (e) { throw new Error(String(e).includes("not found") ? "twg introuvable dans le PATH" : String(e?.message ?? e)); }
   if (r.code !== 0) {
-    const msg = (r.stderr || r.stdout || "").trim().split("\n").find(l => l.trim()) ?? `code ${r.code}`;
+    const msg = (r.stderr || r.stdout || "").split(/\r?\n/).map(l => l.trim()).find(Boolean) ?? `code ${r.code}`;
     throw new Error(`twg : ${msg}`);
   }
   return JSON.parse(r.stdout);
@@ -100,6 +95,11 @@ export default class Jira extends View {
     this.drag = null;
     this.dragOver = null;
     this.ghost = null; // { label, dot, on, grab, start, at }: the copy of the dragged chip
+    this.hoverKey = null; // the issue row under the pointer: it shows the agent buttons
+    this.picking = null; // { key, action }: choosing where the prompt goes
+    this.installed = []; // knownAgents() installed here, most picked first: for new tabs
+    this.sending = null; // the issue whose prompt is being written
+    this.copied = null; // the issue whose key was just copied: its icon shows a check
     // Statuses and issue types (by name, across projects) the person chose not to see.
     this.hidden = {};
     for (const kind of Object.keys(FILTERS)) {
@@ -123,6 +123,10 @@ export default class Jira extends View {
       }
       this.loading = false;
       cx.notify();
+    });
+    // Which agents a new tab can start (Herdr asks at most once a minute).
+    cx.spawn(async cx => {
+      try { this.installed = await installedAgents(); cx.notify(); } catch { /* keep the last list */ }
     });
   }
 
@@ -271,15 +275,128 @@ export default class Jira extends View {
       .border(1).border_color(c).text_color(c).child(type);
   }
 
+  // The agent a new tab starts by default: the installed one Herdr lists first (most picked).
+  defaultAgent() {
+    return this.installed[0] ?? FALLBACK_AGENT;
+  }
+
+  // Where a plain click sends the prompt: the only agent on screen, a new tab of the default
+  // agent when there's none, or null when several are on screen (then the picker asks).
+  autoTarget(newTab) {
+    const shown = newTab ? [] : visibleAgents();
+    if (shown.length > 1) return null;
+    return shown.length === 1 ? { terminal: shown[0].address, program: shown[0].program } : { agent: this.defaultAgent() };
+  }
+
+  // Writes an action's prompt (not sent) into an agent session. `target` is { terminal } or
+  // { agent }; left out, autoTarget decides, or the picker opens under the row.
+  launch(cx, issue, action, target, newTab = false) {
+    target ??= this.autoTarget(newTab);
+    if (!target) {
+      this.picking = { key: issue.key, action };
+      return;
+    }
+    this.picking = null;
+    this.sending = issue.key;
+    cx.spawn(async cx => {
+      await writePrompt(cx, issue, action, target);
+      if (this.sending === issue.key) this.sending = null;
+      cx.notify();
+    });
+  }
+
+  // A program's icon (Herdr's program table): a tinted glyph or a picture.
+  programIcon(t, p, size) {
+    if (!p?.icon) return null;
+    return p.tint ? svg(p.icon).size(size).flex_none().text_color(t.muted) : image(p.icon).size(size).flex_none();
+  }
+
+  // Copies the issue key; the icon turns into a check for a moment.
+  copyButton(t, issue) {
+    const done = this.copied === issue.key;
+    return div().id(`copy-${issue.key}`).size(16).flex_none().flex().items_center().justify_center().rounded(4)
+      .text_color(done ? t.done : t.dim).hover(s => s.bg(t.raised).text_color(t.foreground))
+      .tooltip(`Copier ${issue.key}`)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.write_to_clipboard(issue.key);
+        this.copied = issue.key;
+        cx.notify();
+        cx.timer.after(1500, cx => { if (this.copied === issue.key) { this.copied = null; cx.notify(); } });
+      })
+      .child(svg(`mods/leddt-jira/${done ? "check" : "copy"}.svg`).size(11));
+  }
+
+  // The button shows the icon of the agent a click reaches (none when several are on screen:
+  // the picker asks). The tooltip names it, and the agent Shift+click starts.
+  agentButton(t, issue, action, target) {
+    const program = target?.program ?? target?.agent;
+    const where = !target ? "choisir parmi les agents à l'écran"
+      : target.terminal ? `dans ${program?.name ?? "l'agent"} à l'écran`
+      : `dans un nouvel onglet ${program.name}`;
+    return h_flex().id(`agent-${action.id}-${issue.key}`).h(18).px(6).gap(4).flex_none().items_center().rounded(5)
+      .text_size(10.5).text_color(t.muted).border(1).border_color(t.border).bg(t.surface)
+      .hover(s => s.bg(t.raised).text_color(t.foreground))
+      .tooltip(`${action.label} : ${where}\nShift+clic : nouvel onglet ${this.defaultAgent().name}`)
+      // Shift+click always starts a new tab of the default agent, whatever is on screen.
+      .on_click((e, cx) => {
+        cx.stop_propagation();
+        this.launch(cx, issue, action, undefined, !!e.modifiers?.shift);
+        cx.notify();
+      })
+      .when(!!program?.icon, el => el.child(this.programIcon(t, program, 10)))
+      .child(action.label);
+  }
+
+  // Under the row: one line per agent session on screen, one per installed agent for a
+  // new tab, and cancel.
+  picker(t, issue) {
+    const { action } = this.picking;
+    const option = (id, icon, label, detail, dot, act) =>
+      h_flex().id(id).h(24).px(8).gap(7).items_center().rounded(5).text_size(11.5).cursor_pointer()
+        .hover(s => s.bg(t.hover)).on_click((_e, cx) => { act(cx); cx.notify(); })
+        .when(!!dot, el => el.child(div().size(6).rounded(3).flex_none().bg(dot)))
+        .when(!!icon, el => el.child(icon))
+        .child(div().flex_none().text_color(t.foreground).child(label))
+        .when(!!detail, el => el.child(div().text_color(t.dim).truncate().child(detail)));
+    const installed = this.installed.length ? this.installed : [FALLBACK_AGENT];
+    return v_flex().ml(34).mr(12).mb(4).p(4).gap(1).rounded(7).border(1).border_color(t.border).bg(t.popover)
+      .child(div().px(8).py(3).text_size(10.5).text_color(t.dim).child(`${action.label} : écrire le prompt dans…`))
+      // All in the shown tab: the session name tells them apart, the folder helps.
+      .children(visibleAgents().map(a => {
+        const cwd = panes().find(p => p.terminal === a.address)?.cwd ?? "";
+        const folder = cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+        return option(`pick-${a.address}`, this.programIcon(t, a.program, 12), a.title || a.address, folder,
+          t[a.status] ?? t.idle, cx => this.launch(cx, issue, action, { terminal: a.address }));
+      }))
+      .children(installed.map(agent => option(`pick-new-${agent.key}`, this.programIcon(t, agent, 12),
+        `Nouvel onglet ${agent.name}`, null, null, cx => this.launch(cx, issue, action, { agent }))))
+      .child(option("pick-cancel", null, "Annuler", null, null, () => { this.picking = null; }));
+  }
+
   // The status is the sub-group's header, so the row shows type and key only.
+  // On hover, the agent buttons show at the right of the second line.
   row(t, i) {
-    return v_flex().id(`issue-${i.key}`).pl(34).pr(12).py(5).gap(2).hover(s => s.bg(t.hover)).cursor_pointer()
-      .tooltip(`${i.key} · ${i.type} · ${i.status}\n${i.summary}`)
-      .on_click(() => { if (i.url) openUrl(i.url).catch(() => {}); })
-      .child(div().text_size(12.5).text_color(t.foreground).truncate().child(i.summary))
-      .child(h_flex().gap(6).items_center().text_size(11)
-        .when(!!i.type, el => el.child(this.typeTag(t, i.type)))
-        .child(div().text_color(t.dim).flex_none().child(i.key)));
+    const active = this.hoverKey === i.key || this.picking?.key === i.key;
+    const target = active ? this.autoTarget(false) : null;
+    return v_flex()
+      .child(v_flex().id(`issue-${i.key}`).pl(34).pr(12).py(5).gap(2).hover(s => s.bg(t.hover)).cursor_pointer()
+        .on_hover((hovered, cx) => {
+          if (hovered) this.hoverKey = i.key;
+          else if (this.hoverKey === i.key) this.hoverKey = null;
+          cx.notify();
+        })
+        .on_click((_e, cx) => { if (i.url) cx.open_url(i.url); })
+        .child(div().text_size(12.5).text_color(t.foreground).truncate().child(i.summary))
+        .child(h_flex().h(18).gap(6).items_center().text_size(11)
+          .when(!!i.type, el => el.child(this.typeTag(t, i.type)))
+          .child(div().text_color(t.dim).flex_none().child(i.key))
+          .when(active || this.copied === i.key, el => el.child(this.copyButton(t, i)))
+          .child(div().flex_1())
+          .when(this.sending === i.key, el => el.child(
+            svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
+          .when(active && this.sending !== i.key, el => el.children(ACTIONS.map(a => this.agentButton(t, i, a, target))))))
+      .when(this.picking?.key === i.key, el => el.child(this.picker(t, i)));
   }
 
   // Folds are keyed "<project>/<status>", next to the projects' own keys.
