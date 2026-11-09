@@ -3,7 +3,7 @@
 My customizations to the [Herdr app](https://gpui-kit.com): a layout and a set of mods, all under the `leddt` name.
 They're built on Herdr 0.1.13. The layout and four of the mods are clones of shipped ones, and the other three are new.
 
-Edit them in `~/.config/herdr-app` (live reload works there), then run `./sync.sh` to copy them here.
+Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
 ## Layout: `layouts/leddt.json`
 
@@ -43,7 +43,7 @@ These only show for panes running Claude Code:
 
 ### `leddt-files` (from `files`)
 
-- **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`.
+- **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
 
 The icon paths in all four clones point at their own folder instead of the shipped mod's.
 
