@@ -16,7 +16,7 @@ import {
   BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath, archiveDir,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
 } from "./session.js";
-import { loadDiff, relPath } from "./diffview.js";
+import { loadDiff, relPath, captureAnchors, AROUND } from "./diffview.js";
 
 // Files (leddt-files) shows a file asked for here: { path (absolute), on, at }.
 const OPEN_IN_FILES = "leddt-files.open";
@@ -60,7 +60,8 @@ export class Findings {
     try { this.mode = localStorage.getItem("findings-view") === "diff" ? "diff" : "list"; } catch { this.mode = "list"; }
     this.diff = null; this.diffTick = 0;
     // The code changes under the diff view (a fix, the person's edits): reread it now and then.
-    cx.timer.every(15000, (cx) => { if (this.mode === "diff" && !this.closed) { this.diffTick++; cx.notify(); } });
+    // Not while a load is running: a slow one would chain straight into the next.
+    cx.timer.every(15000, (cx) => { if (this.mode === "diff" && !this.closed && !this.diffLoading) { this.diffTick++; cx.notify(); } });
     cx.spawn(async (cx) => {
       this.s = await loadState(this.id);
       if (!this.s) { this.missing = true; cx.notify(); return; }
@@ -282,6 +283,11 @@ export class Findings {
       try { this.apply(req, r.data, cx); }
       catch (e) { if (final) this.fail(req, `${req.file}: ${e?.message ?? e}`, cx); continue; }
       this.done(req);
+      // The new findings' lines as the reviewer saw them, for the diff view.
+      if (req.kind === "report") {
+        await captureAnchors(this.s, this.s.findings.filter((f) => f.round === req.round)).catch(() => null);
+        this.save();
+      }
     }
   }
 
@@ -331,6 +337,8 @@ export class Findings {
         f.state = ok ? "Fixed" : "Triaged";
         seen.add(f.id);
       }
+      // The code has changed: the diff view rereads it.
+      this.fixGen = (this.fixGen ?? 0) + 1;
       this.leftover(req, seen, "Triaged", "Not reported as fixed");
     } else if (req.kind === "verify") {
       const seen = new Set();
@@ -484,10 +492,11 @@ export class Findings {
     run("layout.show", { id: "panel" });
   }
 
-  // Rereads the diff when the shown findings change (or the timer ticks); the
-  // last one stays on screen meanwhile. Runs from render: no cx.notify() here.
+  // Rereads the diff when the shown findings or their places change, when a fix
+  // comes back, and on the timer (the person's own edits); the last one stays on
+  // screen meanwhile. A state change alone doesn't. Runs from render: no cx.notify() here.
   ensureDiff(shown, cx) {
-    const key = JSON.stringify([this.diffTick, shown.map((f) => [f.id, f.file, f.line, f.state])]);
+    const key = JSON.stringify([this.diffTick, this.fixGen ?? 0, shown.map((f) => [f.id, f.file, f.line, f.anchor])]);
     if (this.diffLoading || this.diff?.key === key) return;
     this.diffLoading = true;
     cx.spawn(async (cx) => {
@@ -497,10 +506,40 @@ export class Findings {
     });
   }
 
+  // A click on a finding's file:line in List: the Diff view with only that
+  // finding (a script can't scroll a plain scroll area to it, only a virtual
+  // list, and those take no click handlers), and a button to show them all.
+  showInDiff(f) {
+    this.setMode("diff");
+    this.focus = f.id;
+    // A new id: the list starts scrolled to the top.
+    this.listGen = (this.listGen ?? 0) + 1;
+  }
+
+  // The diff cut down to one finding: its card, or its file with the lines around it.
+  only(d, id) {
+    const general = d.general.filter((f) => f.id === id);
+    if (general.length) return { ...d, general, files: [] };
+    for (const file of d.files) {
+      const loose = file.loose.filter((f) => f.id === id);
+      if (loose.length) return { ...d, general: [], files: [{ ...file, loose, at: new Map(), spans: [] }] };
+      for (const [row, list] of file.at) {
+        const f = list.find((x) => x.id === id);
+        if (!f) continue;
+        const spans = [{ lo: Math.max(0, row - AROUND), hi: Math.min(file.rows.length - 1, row + AROUND) }];
+        return { ...d, general: [], files: [{ ...file, loose: [], at: new Map([[row, [f]]]), spans }] };
+      }
+    }
+    return null;
+  }
+
   // The findings as comments: each file's lines around them, each finding under its line.
   diffView(t) {
-    const d = this.diff;
+    let d = this.diff;
     if (!d) return [div().p(8).text_color(t.dim).child("Loading the diff…")];
+    const total = d.general.length + d.files.reduce((n, file) => n + file.loose.length + [...file.at.values()].reduce((m, l) => m + l.length, 0), 0);
+    const one = this.focus ? this.only(d, this.focus) : null;
+    if (one) d = one;
     const mono = settings().font_family ?? "JetBrains Mono";
     const gap = (n, key) => div().id(key).w_full().h(20).px(12).flex().items_center().bg(t.raised).text_color(t.dim)
       .font_family(mono).text_size(11).child(`⋯ ${n} line${n === 1 ? "" : "s"}`);
@@ -511,16 +550,20 @@ export class Findings {
       .child(div().w(34).flex_none().text_right().text_color(hit ? t.foreground : t.dim).child(String(number)))
       .child(div().w(10).flex_none().text_color(t.dim).child(kind === " " ? "" : kind))
       .child(div().flex_1().min_w(0).truncate().child(text));
-    const comments = (list) => v_flex().w_full().px(8).py(6).gap(6).bg(t.background).border_t(1).border_b(1).border_color(t.border)
-      .children(list.map((f) => this.card(f, t)));
+    const comments = (list, stale) => v_flex().w_full().px(8).py(6).gap(6).bg(t.background).border_t(1).border_b(1).border_color(t.border)
+      .children(list.map((f) => stale?.has(f.id)
+        ? v_flex().gap(4).child(div().text_size(11).text_color(t.blocked).child(`Line ${f.line} has changed since the review`)).child(this.card(f, t))
+        : this.card(f, t)));
 
     const out = [];
     if (d.error) out.push(div().p(8).text_color(t.ansi1).child(d.error));
-    if (d.general.length) out.push(v_flex().flex_none().gap(6)
+    const general = d.general;
+    if (general.length) out.push(v_flex().flex_none().gap(6)
       .child(div().px(2).text_size(11).font_semibold().text_color(t.dim).child("Not about a file"))
-      .children(d.general.map((f) => this.card(f, t))));
+      .children(general.map((f) => this.card(f, t))));
     for (const file of d.files) {
       const count = file.loose.length + [...file.at.values()].reduce((n, l) => n + l.length, 0);
+      const { loose, spans } = file;
       const block = v_flex().id(`lr-file-${file.path}`).flex_none().rounded(8).border_1().border_color(t.border).overflow_hidden()
         .child(h_flex().h(28).px(10).gap(8).items_center().bg(t.surface).border_b(1).border_color(t.border)
           .child(div().id(`lr-open-${file.path}`).min_w(0).truncate().text_size(12).font_medium().cursor_pointer()
@@ -529,10 +572,10 @@ export class Findings {
           .child(div().flex_1())
           .child(div().flex_none().text_size(11).text_color(t.dim).child(`${count} finding${count === 1 ? "" : "s"}`)))
         .when(Boolean(file.error), (el) => el.child(div().px(10).py(4).text_size(11.5).text_color(t.dim).child(file.error)))
-        .when(file.loose.length > 0, (el) => el.child(comments(file.loose)));
+        .when(loose.length > 0, (el) => el.child(comments(loose, file.stale)));
       const lines = [];
       let prev = -1;
-      for (const { lo, hi } of file.spans) {
+      for (const { lo, hi } of spans) {
         if (lo > prev + 1) lines.push(gap(lo - prev - 1, `lr-gap-${file.path}-${lo}`));
         for (let i = lo; i <= hi; i++) {
           const hits = file.at.get(i);
@@ -541,9 +584,14 @@ export class Findings {
         }
         prev = hi;
       }
-      if (file.spans.length && prev < file.rows.length - 1) lines.push(gap(file.rows.length - 1 - prev, `lr-gap-${file.path}-end`));
+      if (spans.length && prev < file.rows.length - 1) lines.push(gap(file.rows.length - 1 - prev, `lr-gap-${file.path}-end`));
       out.push(block.children(lines));
     }
+    if (one && total > 1) out.unshift(h_flex().id("lr-show-all").flex_none().h(26).px(10).items_center().justify_center().rounded(7)
+      .border_1().border_color(t.border).bg(t.surface).text_size(11.5).text_color(t.muted).cursor_pointer()
+      .hover((st) => st.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { this.focus = null; cx.notify(); })
+      .child(`Show all ${total} findings`));
     return out;
   }
 
@@ -586,7 +634,7 @@ export class Findings {
     const modeButton = (mode, label, tip) => h_flex().id(`lr-mode-${mode}`).h(18).px(7).items_center().rounded(4).text_size(11)
       .when(this.mode === mode, (el) => el.bg(t.raised).text_color(t.foreground))
       .when(this.mode !== mode, (el) => el.text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
-        .on_click((_e, cx) => { this.setMode(mode); cx.notify(); }))
+        .on_click((_e, cx) => { this.setMode(mode); this.focus = null; cx.notify(); }))
       .tooltip(tip).child(label);
 
     const button = (id, label, enabled, primary, action, tip) => h_flex().id(id).h(26).px(10).items_center().rounded(7)
@@ -646,7 +694,7 @@ export class Findings {
       .when(Boolean(s.notice), (el) => el.child(div().flex_none().px(12).py(6).text_size(12).text_color(t.muted).border_b(1).border_color(t.border).child(s.notice)))
       // The findings.
       .child(div().flex_1().min_h(0).relative()
-        .child(v_flex().id("lr-list").absolute().inset_0().overflow_y_scroll().p(8).gap(6)
+        .child(v_flex().id(`lr-list-${this.listGen ?? 0}`).absolute().inset_0().overflow_y_scroll().p(8).gap(6)
           .when(!total && !work.length && !s.notice, (el) => el.child(div().p(8).text_color(t.dim).child("No findings yet.")))
           .when(total > 0 && !shown.length, (el) => el.child(div().p(8).text_color(t.dim).child("Every finding is archived.")))
           .children(this.mode === "diff" && shown.length ? this.diffView(t) : shown.map((f) => this.card(f, t)))))
@@ -716,8 +764,12 @@ export class Findings {
             .when(Boolean(status), (el) => el.child(this.badge(status, statusColor, t)))
             .when(Boolean(impact), (el) => el.child(this.badge(impact, impactColor, t)))
             .when(Boolean(where), (el) => el.child(div().id(`lr-where-${f.id}`).min_w(0).truncate().text_size(10.5).text_color(t.dim)
-              .cursor_pointer().hover((st) => st.text_color(t.accent)).tooltip("Open in Files")
-              .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.file); })
+              .cursor_pointer().hover((st) => st.text_color(t.accent)).tooltip(this.mode === "diff" ? "Open in Files" : "Show in the diff")
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                if (this.mode === "diff") this.openInFiles(f.file);
+                else { this.showInDiff(f); cx.notify(); }
+              })
               .child(where)))
             .when(f.state === "Ignored", (el) => el.child(div().id(`lr-restore-${f.id}`).px(5).h(18).flex().items_center().rounded(5)
               .text_size(10.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
