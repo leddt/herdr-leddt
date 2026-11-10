@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and six of the mods are clones of shipped ones, and the other four mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and six of the mods are clones of shipped ones, and the other five mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -44,7 +44,10 @@ These only show for panes running Claude Code:
 - **Context chip** at the right edge of the header: a small bar with the context % (it changes colour at 65% and again at 85%). It refreshes every 5s and is shared as `leddt-context:<terminal>`. Click it to open the `leddt-context` popover. It only appears on local machines.
 - **Done button** (✓, on hover): sends `/clear`, the same as in `leddt-agents`.
 - **Open in Claude Desktop** (on hover, local only): finds the session ID from `~/.claude/sessions/<pid>.json` (it walks child processes, because Claude often runs under a shell wrapper) and opens `claude://resume?session=<id>`.
+- **Review button** (on hover, local only, needs the pane's folder): opens the `leddt-review` branch picker. Everything after that is in `leddt-review`.
 - `context.js` (new) reads context usage from the session transcript.
+
+The header also names a `leddt-review` pane "Review" instead of the mod's name.
 
 ### `leddt-tabs` (from `tabs`)
 
@@ -87,6 +90,20 @@ A right-panel block that lists the Jira issues assigned to you that aren't done 
 - **Reset filters:** a link in the header, shown when something is hidden or the order was changed. It shows every status and type again and goes back to the automatic order. Folds are kept.
 - **Remembered:** hidden statuses and types (by name, across projects), the status order and the folds, in the mod's `localStorage` (`<Herdr home>/data/leddt-jira/store.json`). One set for the whole window, not per space, and not in this repo.
 - **Data:** runs the `twg` CLI (`twg jira workitem query --jql ... -o json`), so it uses twg's own sign-in and site and holds no token. `twg` has to be on the PATH and signed in. It reads up to 5 pages of 100 issues; each call takes about 2s. It refreshes when the panel loads, every 2 minutes (even while the panel is hidden), and with ↻ in the header. If twg fails, its first error line shows under the header.
+
+### `leddt-review`
+
+A code-review loop for a Claude pane, started from the pane header's **Review** button.
+
+- **Base picker** (a popup): lists the branches the current one could have come from, nearest first, down to the trunk (`main`, `master`, `develop` or `trunk`). For each local and `origin/*` branch it computes the merge-base with HEAD and the commits from there to HEAD, and drops branches whose merge-base is HEAD itself. Local and remote copies of a branch are shown once (the closer one wins). That way an epic branch shows up first even after it has moved on. Up to 25 rows, from the 400 most recently committed refs. A text field takes any other ref (tag, SHA). Up/Down/Enter or click to start. The choice is remembered per repo and branch in the shared value `leddt-review.bases` and pre-selected next time.
+- **Start:** starts a fresh `claude` with `hc run` in the same folder, as a sub-agent of the original agent (`--parent`, `--no-notify` so hc types nothing into the original, `--outlive-parent`). Its first message is `/code-review` scoped to `git diff <merge-base>` (committed changes since the base plus uncommitted ones). It gets `--add-dir` and an `Edit(...)` allow rule for its session folder, so it can write its results without asking. The **Findings** pane opens to the right of the original agent, and the reviewer gets a pane under it (`terminal.keep`).
+- **Findings pane:** one card per finding, with a checkbox (checked by default), its state, the triage status (Valid/Invalid/Partial) and impact (Trivial/Minor/Major/Critical), the file:line, and the recommendation. Click a card to expand the description, the failure scenario, the triage reason, and the fix and verification notes. The header links go to the original agent and the reviewer, and show progress (`done/total`, round). A line under the header says what's running, or that an agent needs you (a permission dialog).
+- **States:** New → Triaging → Triaged → Fixing → Fixed → Verifying → Verified. Verified is done: grayed out, struck through, unchecked. If a fix is declined or verification fails, the finding goes back to Triaged with the reason in red.
+- **Workflow:** once `/code-review` ends, the reviewer is asked to write its findings as JSON (`findings-r<round>.json`, ids `R<round>-<n>`). New findings go to the original agent for triage straight away (`triage-<n>.json`). **Fix** sends the checked Triaged findings to the original agent (`fix-<n>.json`). **Verify** asks the reviewer to recheck the checked Fixed findings (`verify-<n>.json`). **Loop** asks the same reviewer for another round, scoped to the same base, with repeats of earlier findings marked. **Triage** shows up when checked findings are still New (for example after a dismissed request). Each agent handles one request at a time; buttons are disabled while their agent is busy.
+- **How requests work:** each one is a message sent with `hc send --wait`, ending with the path of the JSON file to write. The pane watches the session folder and applies a file as soon as it's valid. If the agent's turn ends without one, or the agent is gone, the request shows as failed with **Retry** (send again) and **Dismiss** (put the findings back in their previous state). The prompts are in `session.js`.
+- **Persistence:** each session lives in `<Herdr home>/data/leddt-review-sessions/<id>/` (`state.json` plus the agents' files), not in this repo. Pending requests are saved before they're sent, so a reload or restart picks up waiting where it left off without sending twice.
+- **Key commands:** `leddt-review:fix`, `leddt-review:verify`, `leddt-review:loop` and `leddt-review:triage` can be bound in `keys.json` (they reach every Findings pane on screen).
+- The original agent isn't started by the mod, so its first write to the session folder may ask for permission, depending on its mode. An allow rule for `Edit(~/.config/herdr-app/data/leddt-review-sessions/**)` in `~/.claude/settings.json` avoids that.
 
 ### `leddt-split`
 
