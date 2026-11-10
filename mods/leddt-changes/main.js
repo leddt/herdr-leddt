@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
 
@@ -30,9 +30,46 @@ function diffRows(lines) {
   });
 }
 
+// The tree view's rows, in order: folders first then files, by name, each with its
+// depth. A folder with a single subfolder and no files of its own shares its row
+// ("src/app/components"). Folded folders hide what's under them.
+function treeRows(files, folded) {
+  const root = { dirs: new Map(), files: [] };
+  for (const f of files) {
+    const parts = f.path.split("/"), name = parts.pop();
+    let node = root, path = "";
+    for (const part of parts) {
+      path = path ? `${path}/${part}` : part;
+      if (!node.dirs.has(part)) node.dirs.set(part, { name: part, path, dirs: new Map(), files: [], add: 0, del: 0, count: 0 });
+      node = node.dirs.get(part);
+      node.add += f.add; node.del += f.del; node.count++;
+    }
+    node.files.push({ name, file: f });
+  }
+  const rows = [];
+  const walk = (node, depth) => {
+    for (let dir of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      let label = dir.name;
+      while (dir.dirs.size === 1 && !dir.files.length) {
+        const only = dir.dirs.values().next().value;
+        label += `/${only.name}`;
+        dir = { ...only, add: dir.add, del: dir.del, count: dir.count };
+      }
+      rows.push({ kind: "dir", depth, label, path: dir.path, add: dir.add, del: dir.del, count: dir.count });
+      if (!folded.has(dir.path)) walk(dir, depth + 1);
+    }
+    for (const { name, file } of node.files.sort((a, b) => a.name.localeCompare(b.name))) rows.push({ kind: "file", depth, name, file });
+  };
+  walk(root, 0);
+  return rows;
+}
+
 export default class Changes extends View {
   init(_props, cx) {
     this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.handle = cx.focus_handle();
+    // List or tree, kept across restarts; folded folders, by path, for this run only.
+    try { this.tree = localStorage.getItem("view") === "tree"; } catch { this.tree = false; }
+    this.folded = new Set();
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -167,6 +204,52 @@ export default class Changes extends View {
     cx.notify();
   }
 
+  setTree(on) {
+    this.tree = on;
+    try { localStorage.setItem("view", on ? "tree" : "list"); } catch {}
+  }
+
+  statusLetter(f, t) {
+    return div().w(14).flex_none().text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status);
+  }
+
+  counts(add, del, t) {
+    return [
+      add > 0 ? div().flex_none().text_size(11).text_color(t.ansi2).child(`+${add}`) : null,
+      del > 0 ? div().flex_none().text_size(11).text_color(t.ansi1).child(`−${del}`) : null,
+    ].filter(Boolean);
+  }
+
+  // A changed file in the flat list: its folder dimmed, then its name.
+  listRow(f, t) {
+    const parts = f.path.split("/"), name = parts.pop();
+    return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+      .child(this.statusLetter(f, t))
+      .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
+      .children(this.counts(f.add, f.del, t));
+  }
+
+  // A tree row: a folder (folds on click, with its files' count and totals) or a file.
+  treeRow(r, t) {
+    const indent = 8 + r.depth * 14;
+    if (r.kind === "dir") {
+      const closed = this.folded.has(r.path);
+      return h_flex().id(`change-dir-${r.path}`).h(28).flex_none().pl(indent).pr(8).gap(6).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { if (closed) this.folded.delete(r.path); else this.folded.add(r.path); cx.notify(); })
+        .child(svg(`mods/leddt-changes/${closed ? "chevron-right" : "chevron-down"}.svg`).size(12).flex_none().text_color(t.dim))
+        .child(svg("mods/leddt-changes/folder.svg").size(13).flex_none().text_color(t.muted))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.label))
+        .when(closed, (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(String(r.count))))
+        .children(this.counts(r.add, r.del, t));
+    }
+    const f = r.file;
+    // A file lines up with its folder's name: past the chevron's room.
+    return h_flex().id(`change-${f.path}`).h(28).flex_none().pl(indent + 18).pr(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+      .child(this.statusLetter(f, t))
+      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .children(this.counts(f.add, f.del, t));
+  }
+
   diffRow({ kind, number, text }, t) {
     if (kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
     return h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
@@ -178,6 +261,8 @@ export default class Changes extends View {
     if (key() !== this.context) this.refresh(cx);
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
+    const tree = this.tree ? treeRows(this.files, this.folded) : null;
+    const rowCount = tree ? tree.length : this.files.length;
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
@@ -185,16 +270,17 @@ export default class Changes extends View {
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
-        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
+        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`))
+        // List ⇄ tree. The icon is the view a click switches to.
+        .child(div().id("changes-view").size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(this.tree ? "Show as a list" : "Show as a tree")
+          .on_click((_e, cx) => { this.setTree(!this.tree); cx.notify(); })
+          .child(svg(`mods/leddt-changes/${this.tree ? "list" : "list-tree"}.svg`).size(14))))
       // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
-      .child(div().flex_1().min_h(44).max_h(this.files.length * 28 + 12).relative().border_b(1).border_color(t.border)
-        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
-        const parts = f.path.split("/"), name = parts.pop();
-        return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
-          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
-          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
-          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
+      .child(div().flex_1().min_h(44).max_h(rowCount * 28 + 12).relative().border_b(1).border_color(t.border)
+        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6)
+          .children(tree ? tree.map((r) => this.treeRow(r, t)) : this.files.map((f) => this.listRow(f, t)))
+          .when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)

@@ -64,13 +64,14 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name. 
 
 ### `leddt-changes` (from `changes`)
 
-- **Folder of a mod pane:** the only change. See the note under the layout.
+- **Folder of a mod pane:** see the note under the layout.
+- **Tree view:** a button at the right of the header switches the file list between the flat list and a tree of folders. In the tree, folders come first, then files, both by name. A folder with only one subfolder and no files shares its row (`src/app/components`). Each folder shows its files' +/− totals; click it to fold, and a folded folder also shows how many files it holds. The view is remembered (the mod's `localStorage`); folds last until Herdr restarts. Its icons (`list`, `list-tree`, and the chevrons and folder copied from `leddt-files`) are in the mod's folder.
 
 ### `leddt-menu` (from `menu`)
 
 - **Icon items** in a space's menu, opened only from `leddt-spaces`: **Choose icon…**, plus **Use project icon** and **Use letter avatar** when they would change something. They have their own `image.svg` icon. Tab and terminal menus still use the shipped `menu`.
 
-`leddt-changes` uses no icon file. The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
+The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
 
 ## New mods
 
