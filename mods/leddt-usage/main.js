@@ -1,5 +1,5 @@
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex } from "gpui-base";
+import { h_flex } from "gpui-base";
 import { theme, home, readTextFile } from "herdr";
 
 const URL = "https://api.anthropic.com/api/oauth/usage";
@@ -15,6 +15,13 @@ function untilText(iso) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+// The empty part of a meter: `dim` at 40%, so it shows on `chrome` in light and dark themes alike
+// (`raised` is too close to `chrome` in some themes).
+function track(t) {
+  return /^#[0-9a-f]{6}$/i.test(t.dim) ? `${t.dim}66` : t.border;
+}
+
+// One line, drawn beside workspace-status at the bottom of the work column.
 export default class ClaudeUsage extends View {
   init(_props, cx) {
     this.data = null;
@@ -43,27 +50,26 @@ export default class ClaudeUsage extends View {
     });
   }
 
-  bar(id, label, entry) {
+  meter(id, label, entry) {
     const t = theme();
     const pct = Math.max(0, Math.min(100, entry?.utilization ?? 0));
     const color = pct >= 90 ? t.blocked : pct >= 70 ? t.done : t.accent;
-    return v_flex().id(id).gap(3).w_full()
-      .child(h_flex().justify_between().text_size(11)
-        .child(div().text_color(t.muted).child(label))
-        .child(div().text_color(t.dim).child(
-          entry ? `${Math.round(pct)}% · ${untilText(entry.resets_at)}` : "—")))
-      .child(div().w_full().h(5).rounded(3).bg(t.raised)
-        .child(div().h_full().rounded(3).bg(color).w(`${pct}%`)
-          .transition("width", 400)));
+    return h_flex().id(id).flex_none().gap(6).items_center().whitespace_nowrap()
+      .child(div().text_color(t.muted).child(label))
+      .child(div().w(44).h(4).rounded(2).bg(track(t))
+        .child(div().h_full().rounded(2).bg(color).w(`${pct}%`).transition("width", 400)))
+      .child(div().text_color(t.dim).child(
+        entry ? `${Math.round(pct)}% · ${untilText(entry.resets_at)}` : "—"));
   }
 
   render() {
     const t = theme();
-    return v_flex().id("root").size_full().bg(t.chrome).border_t(1).border_color(t.border)
-      .px(12).py(8).gap(7).justify_center().cursor_pointer()
+    return h_flex().id("root").size_full().bg(t.chrome).border_t(1).border_color(t.border)
+      .px(14).gap(14).items_center().overflow_hidden().text_size(11.8).cursor_pointer()
       .on_click((_e, cx) => this.refresh(cx))
-      .child(this.bar("five", "Session (5h)", this.data?.five_hour))
-      .child(this.bar("week", "Weekly", this.data?.seven_day))
-      .when(!!this.error, (el) => el.child(div().text_size(10).text_color(t.blocked).truncate().child(this.error)));
+      .when(!!this.error, (el) => el.child(div().text_color(t.blocked).truncate().child(this.error)))
+      .when(!this.error, (el) => el
+        .child(this.meter("five", "5h", this.data?.five_hour))
+        .child(this.meter("week", "Week", this.data?.seven_day)));
   }
 }

@@ -13,13 +13,13 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 |---|---|---|
 | Sidebar spaces list (`spaces`) | `spaces` | `leddt-spaces` |
 | Sidebar agents list (`agents`) | `agents` | `leddt-agents` |
-| Sidebar, below the lists | — | **new** `leddt-usage` block (64px) |
 | Tab bar (`tabs`) | `tabs` | `leddt-tabs` |
 | Pane header | `pane` | `leddt-pane` |
 | Right panel, Files (`files`) | `files` | `leddt-files` |
 | Right panel, Changes (`changes`) | `changes` | `leddt-changes` |
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
 | Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 44px) |
+| Status bar | `status` block | `status-row`: a **new** `leddt-usage` block (370px) at the left, then `workspace-status` |
 
 Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
 
@@ -82,7 +82,7 @@ The icon paths in the four clones that have their own icons point at their own f
 
 ### `leddt-usage`
 
-A sidebar block with two bars showing Claude plan usage: **Session (5h)** and **Weekly**, each with the time until it resets. It reads the OAuth token from `~/.claude/.credentials.json`, calls `api.anthropic.com/api/oauth/usage`, and refreshes every 2 minutes.
+One line at the left of the status bar with two small meters showing Claude plan usage: **5h** (session) and **Week**, each with its % and the time until it resets. It reads the OAuth token from `~/.claude/.credentials.json`, calls `api.anthropic.com/api/oauth/usage`, and refreshes every 2 minutes (click it to refresh now). An error replaces the meters.
 
 ### `leddt-context`
 

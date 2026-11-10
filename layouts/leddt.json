@@ -50,16 +50,6 @@
           ]
         },
         {
-          "id": "leddt-usage",
-          "type": "block",
-          "content": {
-            "mod": "leddt-usage"
-          },
-          "size": {
-            "px": 64
-          }
-        },
-        {
           "id": "sidebar-footer",
           "type": "block",
           "content": {
@@ -184,14 +174,34 @@
           }
         },
         {
-          "id": "status",
-          "type": "block",
-          "content": {
-            "mod": "workspace-status"
-          },
+          "id": "status-row",
+          "type": "row",
+          "children": [
+            {
+              "id": "leddt-usage",
+              "type": "block",
+              "content": {
+                "mod": "leddt-usage"
+              },
+              "size": {
+                "px": 370
+              }
+            },
+            {
+              "id": "status",
+              "type": "block",
+              "content": {
+                "mod": "workspace-status"
+              },
+              "size": {
+                "weight": 1
+              }
+            }
+          ],
           "size": {
             "px": 28
-          }
+          },
+          "resizable": false
         }
       ],
       "resizable": false
