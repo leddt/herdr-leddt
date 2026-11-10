@@ -11,11 +11,15 @@
 // Props: { session }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand } from "herdr";
+import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand, settings } from "herdr";
 import {
   BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath, archiveDir,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
 } from "./session.js";
+import { loadDiff, relPath } from "./diffview.js";
+
+// Files (leddt-files) shows a file asked for here: { path (absolute), on, at }.
+const OPEN_IN_FILES = "leddt-files.open";
 
 const WHO = { reviewer: "Reviewer", origin: "Agent" };
 // Done: grayed out, out of "All", and what Archive hides.
@@ -52,6 +56,11 @@ export class Findings {
     // (an InputState can't be made in render).
     this.inputs = new Map();
     this.saving = Promise.resolve();
+    // "list", or "diff": the findings as comments on the lines they're about.
+    try { this.mode = localStorage.getItem("findings-view") === "diff" ? "diff" : "list"; } catch { this.mode = "list"; }
+    this.diff = null; this.diffTick = 0;
+    // The code changes under the diff view (a fix, the person's edits): reread it now and then.
+    cx.timer.every(15000, (cx) => { if (this.mode === "diff" && !this.closed) { this.diffTick++; cx.notify(); } });
     cx.spawn(async (cx) => {
       this.s = await loadState(this.id);
       if (!this.s) { this.missing = true; cx.notify(); return; }
@@ -461,6 +470,83 @@ export class Findings {
     cx.notify();
   }
 
+  // --- diff view ----------------------------------------------------------------
+
+  setMode(mode) {
+    this.mode = mode;
+    try { localStorage.setItem("findings-view", mode); } catch {}
+  }
+
+  // The file in the Files panel, as a double-click in Changes does.
+  openInFiles(file) {
+    setShared(OPEN_IN_FILES, { path: `${this.s.repo}/${relPath(this.s.repo, file)}`, on: null, at: Date.now() });
+    run("layout.select", { stack: "panel-body", child: "files" });
+    run("layout.show", { id: "panel" });
+  }
+
+  // Rereads the diff when the shown findings change (or the timer ticks); the
+  // last one stays on screen meanwhile. Runs from render: no cx.notify() here.
+  ensureDiff(shown, cx) {
+    const key = JSON.stringify([this.diffTick, shown.map((f) => [f.id, f.file, f.line, f.state])]);
+    if (this.diffLoading || this.diff?.key === key) return;
+    this.diffLoading = true;
+    cx.spawn(async (cx) => {
+      try { this.diff = { key, ...(await loadDiff(this.s, shown)) }; }
+      catch (e) { this.diff = { key, error: String(e?.message ?? e), general: [], files: [] }; }
+      finally { this.diffLoading = false; cx.notify(); }
+    });
+  }
+
+  // The findings as comments: each file's lines around them, each finding under its line.
+  diffView(t) {
+    const d = this.diff;
+    if (!d) return [div().p(8).text_color(t.dim).child("Loading the diff…")];
+    const mono = settings().font_family ?? "JetBrains Mono";
+    const gap = (n, key) => div().id(key).w_full().h(20).px(12).flex().items_center().bg(t.raised).text_color(t.dim)
+      .font_family(mono).text_size(11).child(`⋯ ${n} line${n === 1 ? "" : "s"}`);
+    const row = ({ kind, number, text }, hit) => h_flex().w_full().h(20).flex_none().gap(10).font_family(mono).text_size(11)
+      .when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
+      .when(hit, (e) => e.bg(t.accent + "30"))
+      .child(div().w(3).h_full().flex_none().when(hit, (e) => e.bg(t.accent)))
+      .child(div().w(34).flex_none().text_right().text_color(hit ? t.foreground : t.dim).child(String(number)))
+      .child(div().w(10).flex_none().text_color(t.dim).child(kind === " " ? "" : kind))
+      .child(div().flex_1().min_w(0).truncate().child(text));
+    const comments = (list) => v_flex().w_full().px(8).py(6).gap(6).bg(t.background).border_t(1).border_b(1).border_color(t.border)
+      .children(list.map((f) => this.card(f, t)));
+
+    const out = [];
+    if (d.error) out.push(div().p(8).text_color(t.ansi1).child(d.error));
+    if (d.general.length) out.push(v_flex().flex_none().gap(6)
+      .child(div().px(2).text_size(11).font_semibold().text_color(t.dim).child("Not about a file"))
+      .children(d.general.map((f) => this.card(f, t))));
+    for (const file of d.files) {
+      const count = file.loose.length + [...file.at.values()].reduce((n, l) => n + l.length, 0);
+      const block = v_flex().id(`lr-file-${file.path}`).flex_none().rounded(8).border_1().border_color(t.border).overflow_hidden()
+        .child(h_flex().h(28).px(10).gap(8).items_center().bg(t.surface).border_b(1).border_color(t.border)
+          .child(div().id(`lr-open-${file.path}`).min_w(0).truncate().text_size(12).font_medium().cursor_pointer()
+            .hover((st) => st.text_color(t.accent)).tooltip("Open in Files")
+            .on_click(() => this.openInFiles(file.path)).child(file.path))
+          .child(div().flex_1())
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(`${count} finding${count === 1 ? "" : "s"}`)))
+        .when(Boolean(file.error), (el) => el.child(div().px(10).py(4).text_size(11.5).text_color(t.dim).child(file.error)))
+        .when(file.loose.length > 0, (el) => el.child(comments(file.loose)));
+      const lines = [];
+      let prev = -1;
+      for (const { lo, hi } of file.spans) {
+        if (lo > prev + 1) lines.push(gap(lo - prev - 1, `lr-gap-${file.path}-${lo}`));
+        for (let i = lo; i <= hi; i++) {
+          const hits = file.at.get(i);
+          lines.push(row(file.rows[i], Boolean(hits)));
+          if (hits) lines.push(comments(hits));
+        }
+        prev = hi;
+      }
+      if (file.spans.length && prev < file.rows.length - 1) lines.push(gap(file.rows.length - 1 - prev, `lr-gap-${file.path}-end`));
+      out.push(block.children(lines));
+    }
+    return out;
+  }
+
   // --- view ---------------------------------------------------------------------
 
   activity(req) {
@@ -496,6 +582,12 @@ export class Findings {
     const shown = s.findings.filter((f) => !f.archived);
     const archived = total - shown.length;
     const toArchive = shown.filter((f) => DONE.has(f.state)).length;
+    if (this.mode === "diff") this.ensureDiff(shown, cx);
+    const modeButton = (mode, label, tip) => h_flex().id(`lr-mode-${mode}`).h(18).px(7).items_center().rounded(4).text_size(11)
+      .when(this.mode === mode, (el) => el.bg(t.raised).text_color(t.foreground))
+      .when(this.mode !== mode, (el) => el.text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { this.setMode(mode); cx.notify(); }))
+      .tooltip(tip).child(label);
 
     const button = (id, label, enabled, primary, action, tip) => h_flex().id(id).h(26).px(10).items_center().rounded(7)
       .text_size(12).font_medium().flex_none()
@@ -527,6 +619,9 @@ export class Findings {
           .child(div().font_semibold().text_size(13).child("Findings"))
           .child(div().text_size(11).text_color(t.dim).child((total ? `${doneCount}/${total} done · ` : "") + (archived ? `${archived} archived · ` : "") + `round ${s.round}`))
           .child(div().flex_1())
+          .child(h_flex().flex_none().p(1).gap(1).rounded(5).border_1().border_color(t.input)
+            .child(modeButton("list", "List", "Show the findings as a list"))
+            .child(modeButton("diff", "Diff", "Show the findings as comments on the diff")))
           .child(link("lr-go-origin", "Agent", s.origin))
           .child(link("lr-go-reviewer", "Reviewer", s.reviewer))
           .child(h_flex().id("lr-done").h(20).px(7).items_center().rounded(5).border_1().border_color(t.input).text_size(11)
@@ -554,7 +649,7 @@ export class Findings {
         .child(v_flex().id("lr-list").absolute().inset_0().overflow_y_scroll().p(8).gap(6)
           .when(!total && !work.length && !s.notice, (el) => el.child(div().p(8).text_color(t.dim).child("No findings yet.")))
           .when(total > 0 && !shown.length, (el) => el.child(div().p(8).text_color(t.dim).child("Every finding is archived.")))
-          .children(shown.map((f) => this.card(f, t)))))
+          .children(this.mode === "diff" && shown.length ? this.diffView(t) : shown.map((f) => this.card(f, t)))))
       // Actions.
       .child(h_flex().flex_none().px(10).py(8).gap(6).items_center().border_t(1).border_color(t.border)
         .child(h_flex().id("lr-all").gap(6).items_center().cursor_pointer().text_size(11.5).text_color(t.muted)
@@ -620,7 +715,10 @@ export class Findings {
             .child(this.badge(f.state, stateColor, t, busy))
             .when(Boolean(status), (el) => el.child(this.badge(status, statusColor, t)))
             .when(Boolean(impact), (el) => el.child(this.badge(impact, impactColor, t)))
-            .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(where)))
+            .when(Boolean(where), (el) => el.child(div().id(`lr-where-${f.id}`).min_w(0).truncate().text_size(10.5).text_color(t.dim)
+              .cursor_pointer().hover((st) => st.text_color(t.accent)).tooltip("Open in Files")
+              .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.file); })
+              .child(where)))
             .when(f.state === "Ignored", (el) => el.child(div().id(`lr-restore-${f.id}`).px(5).h(18).flex().items_center().rounded(5)
               .text_size(10.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
               .tooltip(`Put it back to ${f.ignoredFrom ?? "New"}`)
