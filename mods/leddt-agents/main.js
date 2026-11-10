@@ -57,6 +57,19 @@ function icon(p, size, color) {
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
 
+// The agent's space avatar (published by leddt-spaces) with the agent's icon on its
+// corner, cut out of the avatar by the sidebar's color; without one, the agent's icon alone.
+function badge(a, t) {
+  const av = (shared("leddt-spaces.avatars") ?? {})[a.space];
+  if (!av) return icon(a.program, 16, t.foreground);
+  const space = av.icon
+    ? image(av.icon).size(18).flex_none().rounded(4)
+    : h_flex().size(18).flex_none().rounded(5).bg(av.fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(av.letter);
+  const pic = icon(a.program, 12, t.foreground);
+  return div().relative().w(24).h(23).flex_none().child(space)
+    .when(Boolean(pic), (el) => el.child(div().absolute().right(0).bottom(0).p(1).rounded(4).bg(t.chrome).child(pic)));
+}
+
 // Claude Code agents can be renamed: double-click sends `/rename <name>` to the session.
 const isClaude = (a) => a.program?.key === "claude" || a.app === "claude-code";
 
@@ -314,7 +327,7 @@ export default class Agents extends View {
     const tabNames = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab.named ? tab.name : ""]));
 
     const row = (a, i, subs = []) => {
-      const pic = icon(a.program, 16, t.foreground);
+      const pic = badge(a, t);
       const more = tabNames.get(a.tab) || null;
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;

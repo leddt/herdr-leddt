@@ -93,6 +93,8 @@ async function findPr(f, branch, cwd, on) {
 // Avatars can be the project's icon. Each space's choice, set from its menu (leddt-menu):
 // { [space]: "letter" | { file } }; none: the icon found in its repo, else the letter.
 const ICONS = "leddt-spaces.icons";
+// What each space's avatar shows now, for other mods (see publishAvatars).
+const AVATARS = "leddt-spaces.avatars";
 // image() only reads under the Herdr home, so icons are copied there (by a hash of where they came from).
 const ICON_DIR = "data/leddt-spaces-icons";
 const IMAGE = /\.(svg|png|ico|jpe?g|webp|gif|bmp)$/i;
@@ -754,6 +756,26 @@ export default class Spaces extends View {
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
   }
 
+  // Each space's avatar for other mods (leddt-agents): { [space]: { icon, fill, letter } },
+  // icon the copy image() reads, else null for the letter on its color. Written only when it changes.
+  publishAvatars(sp, colors, t) {
+    const ps = panes();
+    const all = {};
+    for (const s of sp) {
+      const src = this.iconSource(s, this.git[where(s, ps)]);
+      const color = colors[s.id] ?? "ansi6";
+      all[s.id] = {
+        icon: (src && this.icons[src.key]) || null,
+        fill: color.startsWith("#") ? color : (MARK[color] ?? t[color]),
+        letter: [...s.name][0]?.toUpperCase() ?? "?",
+      };
+    }
+    const json = JSON.stringify(all);
+    if (json === this.avatarsJson) return;
+    this.avatarsJson = json;
+    setShared(AVATARS, all);
+  }
+
   render() {
     const t = theme();
     const collapsed = narrow();
@@ -769,6 +791,7 @@ export default class Spaces extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    this.publishAvatars(sp, kept, t);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
