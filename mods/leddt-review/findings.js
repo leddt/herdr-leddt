@@ -10,13 +10,12 @@
 // Props: { session }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, theme, run, exec, terminals, watchFolder, nextCommand } from "herdr";
+import { props, theme, run, exec, terminals, panes, focused, notify, watchFolder, nextCommand } from "herdr";
 import {
-  BUSY_BACK, loadState, saveState, readJson, sessionDir,
+  BUSY_BACK, loadState, saveState, readJson, sessionDir, statePath,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
 } from "./session.js";
 
-const IMPACTS = ["Critical", "Major", "Minor", "Trivial"];
 const WHO = { reviewer: "Reviewer", origin: "Agent" };
 
 async function hcJson(args, timeout) {
@@ -26,12 +25,20 @@ async function hcJson(args, timeout) {
   return { code: r.code, data, text: (r.stderr || r.stdout).trim() };
 }
 
+// `hc get` reports status as {app, state, msg}, `hc wait` as a plain word;
+// null when the terminal is gone.
+function statusOf(g) {
+  if (g.code !== 0 || g.data?.state === "finished") return null;
+  return typeof g.data?.status === "object" ? g.data.status?.state : g.data?.status;
+}
+
 export class Findings {
   init(view, cx) {
     this.view = view;
     this.id = props()?.session;
     this.s = null;
-    this.running = new Set();
+    // Requests being driven: n → agent. One at a time per agent.
+    this.running = new Map();
     this.open = new Set();
     this.saving = Promise.resolve();
     cx.spawn(async (cx) => {
@@ -42,11 +49,12 @@ export class Findings {
       cx.notify();
       this.watch(cx);
     });
-    // Key commands (keys.json "…": "leddt-review:fix"), for every shown Findings pane.
+    // Key commands (keys.json "…": "leddt-review:fix") reach every shown
+    // Findings pane; only the one for the focused tab's session acts.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (!this.s) continue;
+        if (!this.s || !this.inFocusedTab()) continue;
         if (c === "fix") this.fix(cx);
         else if (c === "verify") this.verify(cx);
         else if (c === "loop") this.loop(cx);
@@ -61,7 +69,8 @@ export class Findings {
       for (;;) {
         try { await watchFolder(sessionDir(this.id)); }
         catch { await cx.sleep(3000); }
-        await this.checkFiles(cx);
+        // A throw here must not end the loop: the next change tries again.
+        try { await this.checkFiles(cx); } catch {}
         cx.notify();
       }
     });
@@ -69,8 +78,23 @@ export class Findings {
 
   save() {
     const snapshot = JSON.parse(JSON.stringify(this.s));
-    this.saving = this.saving.then(() => saveState(snapshot)).catch(() => {});
+    this.saving = this.saving.then(() => saveState(snapshot)).then(
+      () => { this.saveFailed = false; },
+      (e) => {
+        // Once per run of failures; the chain carries on with the next save.
+        if (this.saveFailed) return;
+        this.saveFailed = true;
+        notify({ title: "Review: couldn't save the session", body: `${statePath(this.id)}: ${e?.message ?? e}`, level: "error" });
+      });
     return this.saving;
+  }
+
+  alive(addr) { return Boolean(addr) && terminals().some((x) => x.address === addr && x.state === "live"); }
+
+  // This session's agent or reviewer is in the focused tab.
+  inFocusedTab() {
+    const tab = focused()?.tab;
+    return Boolean(tab) && panes().some((p) => p.tab === tab && p.terminal && (p.terminal === this.s.origin || p.terminal === this.s.reviewer));
   }
 
   find(id) { return this.s.findings.find((f) => f.id === id); }
@@ -81,7 +105,8 @@ export class Findings {
 
   request(cx, kind, agent, ids, build) {
     const n = ++this.s.seq;
-    const file = kind === "report" ? `findings-r${this.s.round}.json` : `${kind}-${n}.json`;
+    // A review round writes no file: its report request (sent when it ends) does.
+    const file = kind === "review" ? null : kind === "report" ? `findings-r${this.s.round}.json` : `${kind}-${n}.json`;
     const req = { n, kind, agent, ids, file, round: this.s.round, sent: false, status: "pending" };
     req.text = build(`${sessionDir(this.id)}/${file}`);
     this.s.requests.push(req);
@@ -93,15 +118,20 @@ export class Findings {
     cx.notify();
   }
 
+  // Start the oldest pending request of each agent that isn't busy with one:
+  // a second message typed into an agent mid-turn would mix the two up.
   pump(cx) {
+    const busy = new Set(this.running.values());
     for (const req of this.s.requests) {
-      if (req.status === "pending" && !this.running.has(req.n)) this.drive(req, cx);
+      if (req.status !== "pending" || busy.has(req.agent)) continue;
+      busy.add(req.agent);
+      this.drive(req, cx);
     }
   }
 
   // Send the request (once), then follow the agent until its turn ends.
   drive(req, cx) {
-    this.running.add(req.n);
+    this.running.set(req.n, req.agent);
     cx.spawn(async (cx) => {
       try {
         const addr = this.s[req.agent];
@@ -112,6 +142,13 @@ export class Findings {
           const r = await hcJson(["send", "--wait", "--timeout", "540", addr, req.text], 600000);
           if (r.code !== 0 && r.data?.reason !== "timeout") { req.sent = false; return this.fail(req, `Couldn't send to ${WHO[req.agent]} (${addr}): ${r.text}`, cx); }
         } else if (req.launch) {
+          // A fresh Claude may sit idle for a moment before it picks up its
+          // prompt, and idle ends `hc wait`: first see it start (up to a minute).
+          for (let i = 0; i < 60; i++) {
+            const st = statusOf(await hcJson(["get", addr]));
+            if (st === "working" || st === "blocked" || st === null) break;
+            await cx.sleep(1000);
+          }
           await hcJson(["wait", addr, "--timeout", "540"], 600000);
         }
         // Until it's done with the turn: keep waiting while it works, and while
@@ -120,8 +157,7 @@ export class Findings {
           if (req.status !== "pending") return;
           const g = await hcJson(["get", addr]);
           if (g.code !== 0 || g.data?.state === "finished") return this.fail(req, `${WHO[req.agent]} (${addr}) is gone.`, cx);
-          // `hc get` reports {app, state, msg}; `hc wait` a plain word.
-          const st = typeof g.data?.status === "object" ? g.data.status?.state : g.data?.status;
+          const st = statusOf(g);
           req.blocked = st === "blocked";
           cx.notify();
           if (st === "working") await hcJson(["wait", addr, "--timeout", "540"], 600000);
@@ -140,12 +176,16 @@ export class Findings {
         this.fail(req, String(e?.message ?? e), cx);
       } finally {
         this.running.delete(req.n);
+        // The agent is free: the next request queued for it can go.
+        this.pump(cx);
         cx.notify();
       }
     });
   }
 
   done(req) {
+    // Not "pending" any more: a checkFiles or drive still holding it leaves it alone.
+    req.status = "done";
     this.s.requests = this.s.requests.filter((r) => r !== req);
     this.save();
   }
@@ -195,20 +235,24 @@ export class Findings {
     const list = (key) => {
       const v = data?.[key];
       if (!Array.isArray(v)) throw new Error(`expected {"${key}": [...]}`);
+      // Checked up front: a throw halfway would leave half the file applied,
+      // and the next check would apply that half again.
+      if (v.some((x) => !x || typeof x !== "object" || Array.isArray(x))) throw new Error(`every "${key}" entry must be an object`);
       return v;
     };
     if (req.kind === "report") {
-      const fresh = [];
+      const fresh = [], added = [];
       for (const raw of list("findings")) {
         let id = String(raw.id ?? `R${req.round}-${fresh.length + 1}`);
-        while (this.find(id)) id += "'";
-        this.s.findings.push({
+        while (this.find(id) || fresh.includes(id)) id += "'";
+        added.push({
           id, round: req.round, title: raw.title ?? "(untitled)", file: raw.file ?? null, line: raw.line ?? null,
           severity: raw.severity ?? null, description: raw.description ?? "", failure: raw.failure ?? null,
           repeats: raw.repeats ?? null, state: "New", checked: true,
         });
         fresh.push(id);
       }
+      this.s.findings.push(...added);
       if (!fresh.length) this.s.notice = `Round ${req.round}: the reviewer found nothing.`;
       else this.queueTriage(cx, fresh);
     } else if (req.kind === "triage") {
@@ -275,7 +319,7 @@ export class Findings {
 
   verify(cx) {
     const fs = this.picked("Fixed");
-    if (!fs.length || this.pending("reviewer")) return;
+    if (!fs.length || this.pending("reviewer") || !this.alive(this.s.reviewer)) return;
     this.request(cx, "verify", "reviewer", fs.map((f) => f.id), (path) => verifyTask(this.s, fs, path));
   }
 
@@ -286,7 +330,7 @@ export class Findings {
   }
 
   loop(cx) {
-    if (this.pending("reviewer")) return;
+    if (this.pending("reviewer") || !this.alive(this.s.reviewer)) return;
     this.s.round += 1;
     this.request(cx, "review", "reviewer", [], () => loopTask(this.s));
   }
@@ -296,6 +340,10 @@ export class Findings {
   activity(req) {
     const n = req.ids?.length ?? 0, s = n === 1 ? "" : "s";
     if (req.blocked) return `${WHO[req.agent]} needs you (${this.s[req.agent]})`;
+    if (!this.running.has(req.n)) return `Next for ${WHO[req.agent]}, when it's done: ` + {
+      review: `review round ${req.round}`, report: "write up its findings", triage: `triage ${n} finding${s}`,
+      fix: `fix ${n} finding${s}`, verify: `verify ${n} fix${n === 1 ? "" : "es"}`,
+    }[req.kind];
     return {
       review: `Reviewer is reviewing (round ${req.round})…`,
       report: "Reviewer is writing up its findings…",
@@ -328,7 +376,12 @@ export class Findings {
     const link = (id, label, addr) => h_flex().id(id).px(6).h(20).items_center().rounded(5).text_size(11)
       .text_color(alive.has(addr) ? t.muted : t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
       .tooltip(alive.has(addr) ? `Go to ${addr}` : `${addr} has ended`)
-      .on_click(() => { if (alive.has(addr)) run("pane.focus", { terminal: addr }); })
+      // Its pane when it has one, else (a sub-agent) peek at it, as the agents list does.
+      .on_click(() => {
+        if (!alive.has(addr)) return;
+        if (panes().some((x) => x.terminal === addr)) run("pane.focus", { terminal: addr });
+        else run("terminal.peek", { terminal: addr });
+      })
       .child(`${label} ${addr}`);
 
     const work = s.requests.filter((r) => r.status === "pending");
@@ -349,7 +402,9 @@ export class Findings {
       // What's happening now, and what went wrong.
       .children(work.map((r) => h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border)
         .bg(r.blocked ? t.blocked + "1a" : t.surface).text_size(12).text_color(r.blocked ? t.blocked : t.muted)
-        .child(r.blocked ? div().size(7).rounded(4).bg(t.blocked) : svg("mods/leddt-review/spinner.svg").size(12).text_color(t.working).spin(900))
+        .child(r.blocked ? div().size(7).rounded(4).bg(t.blocked)
+          : this.running.has(r.n) ? svg("mods/leddt-review/spinner.svg").size(12).text_color(t.working).spin(900)
+          : div().size(7).rounded(4).bg(t.dim))
         .child(div().flex_1().truncate().child(this.activity(r)))))
       .children(errors.map((r) => h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border)
         .bg(t.ansi1 + "14").text_size(12)
@@ -407,12 +462,14 @@ export class Findings {
           .child(this.box(f.checked && !done, t, done)))
         .child(v_flex().flex_1().min_w(0).gap(4).id(`lr-head-${f.id}`).cursor_pointer()
           .on_click((_e, cx) => { expanded ? this.open.delete(f.id) : this.open.add(f.id); cx.notify(); })
-          .child(div().text_size(12.5).font_medium().whitespace_normal().when(done, (el) => el.line_through()).child(f.title))
+          .child(h_flex().gap(6).items_start()
+            .child(div().flex_none().mt(1).px(5).h(16).flex().items_center().rounded(4).border_1().border_color(t.input)
+              .text_size(10.5).font_semibold().text_color(t.muted).child(f.id))
+            .child(div().flex_1().min_w(0).text_size(12.5).font_medium().whitespace_normal().when(done, (el) => el.line_through()).child(f.title)))
           .child(h_flex().gap(5).items_center().flex_wrap()
             .child(this.badge(f.state, stateColor, t, busy))
             .when(Boolean(status), (el) => el.child(this.badge(status, statusColor, t)))
             .when(Boolean(impact), (el) => el.child(this.badge(impact, impactColor, t)))
-            .child(div().text_size(10.5).text_color(t.dim).child(f.id))
             .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(where))))
           .when(Boolean(f.triage?.recommendation), (el) => el.child(div().text_size(12).text_color(t.foreground).whitespace_normal()
             .child(`→ ${f.triage.recommendation}`)))

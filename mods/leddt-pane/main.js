@@ -8,6 +8,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared, window } from "herdr";
 import { readContext, contextColor, fmtTokens } from "./context.js";
+import { review } from "./review.js";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -200,11 +201,11 @@ export default class Pane extends View {
           .text_size(11.5)
           .text_color(t.dim)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .tooltip("Review this branch: a fresh Claude runs /code-review")
-          .on_click((_e, cx) => {
+          .tooltip("Review this branch (reopens its last review; Shift+click: a new one)")
+          .on_click((e, cx) => {
             cx.stop_propagation();
-            openOverlay({ mod: "leddt-review", kind: "popup", width: 400, height: 380,
-              props: { mode: "pick", origin: p.terminal, pane, cwd: p.cwd } });
+            const fresh = !!e.modifiers?.shift;
+            cx.spawn(async (cx) => review(cx, p, fresh));
           })
           .child(svg("mods/leddt-review/git-compare.svg").size(13))
           .child("Review")))

@@ -10,6 +10,8 @@ import * as fs from "fs/promises";
 import { baseCandidates, resolveBase, sessionDir, saveState, reviewTask } from "./session.js";
 
 const REMEMBER = "leddt-review.bases";
+// session id → its Findings pane (read by leddt-pane's Review button).
+const PANES = "leddt-review.panes";
 
 export class Picker {
   init(view, cx) {
@@ -134,7 +136,11 @@ async function startSession(cx, p, info, base) {
     mine = panes().find((x) => x.mod === "leddt-review" && !before.has(x.pane));
     if (!mine) await cx.sleep(50);
   }
-  if (mine) run("pane.focus", { pane: mine.pane });
+  if (mine) {
+    // Pane mods aren't told their pane: remember it, so Review can find it again.
+    setShared(PANES, { ...(shared(PANES) ?? {}), [id]: mine.pane });
+    run("pane.focus", { pane: mine.pane });
+  }
   run("terminal.keep", { terminal: s.reviewer, place: "down" });
   if (!mine) notify({ title: "Review started", body: `The Findings pane didn't appear; the reviewer is ${s.reviewer}.`, level: "warning" });
 }

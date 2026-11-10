@@ -10,7 +10,6 @@
 import * as fs from "fs/promises";
 import { appHome, exec } from "herdr";
 
-export const STATES = ["New", "Triaging", "Triaged", "Fixing", "Fixed", "Verifying", "Verified"];
 // While a request is out, its findings show this state; Dismiss puts them back.
 export const BUSY_BACK = { Triaging: "New", Fixing: "Triaged", Verifying: "Fixed" };
 
@@ -29,7 +28,9 @@ export async function saveState(s) {
 
 export async function readJson(path) {
   if (!(await fs.exists(path))) return { missing: true };
-  const text = await fs.readFile(path, "utf8");
+  let text;
+  // Gone or swapped between the two calls: an error, which only counts once the agent's turn is over.
+  try { text = await fs.readFile(path, "utf8"); } catch (e) { return { error: `Couldn't read ${path.split("/").pop()}: ${e?.message ?? e}` }; }
   try { return { data: JSON.parse(text) }; } catch (e) { return { error: `Invalid JSON in ${path.split("/").pop()}: ${e?.message ?? e}` }; }
 }
 
