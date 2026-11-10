@@ -140,12 +140,54 @@ async function findIcon(top, repo, on) {
   return best && `${top}/${best}`;
 }
 
+// Raster icons are shrunk to this many pixels a side (twice the avatar's 18) with a good
+// filter: the renderer scales an image in one step, which leaves a big one jagged.
+const ICON_PX = 36;
+
+// Shrinks a raster image to ICON_PX, centered on a clear square; true when it could.
+async function shrinkIcon(src, dst) {
+  const p = window()?.platform;
+  if (p === "windows") {
+    const q = (s) => `'${s.replace(/\//g, "\\").replace(/'/g, "''")}'`;
+    const script = "Add-Type -AssemblyName System.Drawing;"
+      + `$src = ${q(src)}; $n = ${ICON_PX};`
+      + "$img = if ($src -match '\\.ico$') { (New-Object System.Drawing.Icon($src, 256, 256)).ToBitmap() } else { [System.Drawing.Image]::FromFile($src) };"
+      + "if ($img.Width -le $n -and $img.Height -le $n) { exit 2 };"
+      + "$k = [Math]::Min($n / $img.Width, $n / $img.Height);"
+      + "$w = [int][Math]::Max(1, [Math]::Round($img.Width * $k)); $h = [int][Math]::Max(1, [Math]::Round($img.Height * $k));"
+      + "$bmp = New-Object System.Drawing.Bitmap($n, $n, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb);"
+      + "$g = [System.Drawing.Graphics]::FromImage($bmp);"
+      + "$g.InterpolationMode = 'HighQualityBicubic'; $g.SmoothingMode = 'HighQuality'; $g.PixelOffsetMode = 'HighQuality'; $g.CompositingQuality = 'HighQuality';"
+      + "$a = New-Object System.Drawing.Imaging.ImageAttributes; $a.SetWrapMode('TileFlipXY');"
+      + "$r = New-Object System.Drawing.Rectangle([int](($n - $w) / 2), [int](($n - $h) / 2), $w, $h);"
+      + "$g.DrawImage($img, $r, 0, 0, $img.Width, $img.Height, 'Pixel', $a);"
+      + `$bmp.Save(${q(dst)}, [System.Drawing.Imaging.ImageFormat]::Png)`;
+    const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 30000 });
+    return r.code === 0;
+  }
+  if (p === "macos") {
+    const r = await exec("sips", ["-s", "format", "png", "-Z", String(ICON_PX), src, "--out", dst]);
+    return r.code === 0;
+  }
+  try {
+    const r = await exec("magick", [src + "[0]", "-resize", `${ICON_PX}x${ICON_PX}>`, "-background", "none", "-gravity", "center", "-extent", `${ICON_PX}x${ICON_PX}`, `png:${dst}`]);
+    return r.code === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Copies an icon (on this computer) under the Herdr home; answers its path for image(), or null.
 async function copyIcon(src) {
   const ext = (/\.([a-z0-9]+)$/i.exec(src)?.[1] ?? "png").toLowerCase();
+  await fs.mkdir(`${appHome()}/${ICON_DIR}`, { recursive: true });
+  if (ext !== "svg") {
+    const rel = `${ICON_DIR}/${hash(src)}-${ICON_PX}.png`;
+    if (await shrinkIcon(src, `${appHome()}/${rel}`).catch(() => false)) return rel;
+  }
+  // Small enough already, a vector, or no way to shrink it here: as is.
   const rel = `${ICON_DIR}/${hash(src)}.${ext}`;
   const dst = `${appHome()}/${rel}`;
-  await fs.mkdir(`${appHome()}/${ICON_DIR}`, { recursive: true });
   // fs reads only under the home folder; a project can be anywhere.
   const win = (s) => s.replace(/\//g, "\\");
   const r = window()?.platform === "windows"
