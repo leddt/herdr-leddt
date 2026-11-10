@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and seven of the mods are clones of shipped ones, and the other mods and the theme are new.
+They're up to date with Herdr 0.1.15: the cloned mods have the shipped changes from 0.1.14 and 0.1.15. The layout and seven of the mods are clones of shipped ones, and the other mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
