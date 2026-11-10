@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and seven of the mods are clones of shipped ones, and the other five mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and seven of the mods are clones of shipped ones, and the other mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -19,6 +19,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Right panel, Files (`files`) | `files` | `leddt-files` |
 | Right panel, Changes (`changes`) | `changes` | `leddt-changes` |
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
+| Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 44px) |
 
 Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
 
@@ -119,6 +120,10 @@ A code-review loop for a Claude pane, started from the pane header's **Review** 
 - **Persistence:** each session lives in `<Herdr home>/data/leddt-review-sessions/<id>/` (`state.json` plus the agents' files), not in this repo. Pending requests are saved before they're sent, so a reload or restart picks up waiting where it left off without sending twice. A result file is validated in full before anything changes. If the state can't be saved, a notification says so (once per run of failures).
 - **Key commands:** `leddt-review:fix`, `leddt-review:verify`, `leddt-review:loop` and `leddt-review:triage` can be bound in `keys.json` (they reach every Findings pane on screen, but only the one whose agent or reviewer is in the focused tab acts).
 - The original agent isn't started by the mod, so its first write to the session folder may ask for permission, depending on its mode. An allow rule for `Edit(~/.config/herdr-app/data/leddt-review-sessions/**)` in `~/.claude/settings.json` avoids that.
+
+### `leddt-command`
+
+A command line under the shown tab's panes. Type a command and press Enter: a new terminal opens below the focused pane of the shown tab (its first pane when the focus is elsewhere), in that pane's folder (for a mod pane, the tab's first terminal's), and runs it. The terminal is named after the command and stays at a shell prompt when the command ends: on Windows, PowerShell 7 (`pwsh -NoExit -Command`, or Windows PowerShell when `pwsh` isn't installed); elsewhere and on other machines, `$SHELL -ic`, then an interactive `$SHELL`. Up/Down go through the last 100 commands (the mod's `localStorage`), Esc clears the field.
 
 ### `leddt-split`
 
