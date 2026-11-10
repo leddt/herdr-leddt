@@ -42,45 +42,45 @@ export async function readJson(path) {
 
 const TRUNKS = ["main", "master", "develop", "trunk"];
 
-// Every branch the current one could have come from: each local or remote
-// branch's merge-base with HEAD, nearest first. A branch whose merge-base is
-// HEAD itself (the same commit, or one built on top) can't be a base.
+// Every local branch the current one could have come from, nearest first: how
+// many of HEAD's commits each one lacks, all from one for-each-ref
+// (%(ahead-behind), git 2.41+). A process per branch took ~0.2s each on
+// Windows, a minute in a repo with a few hundred branches. A branch that lacks
+// none of them (the same commit, or one built on top) can't be a base.
 const CANDIDATES = `
 head=$(git rev-parse HEAD) || exit 2
 cur=$(git symbolic-ref --short -q HEAD)
-up=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)
 printf '%s\\t%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$cur" "$head"
-git for-each-ref --sort=-committerdate --count=400 --format='%(refname:short)	%(refname)' refs/heads refs/remotes |
-while IFS='	' read -r name full; do
-  case "$full" in */HEAD) continue;; esac
+git for-each-ref --format='%(refname:short)	%(refname)	%(ahead-behind:HEAD)' refs/heads |
+while IFS='	' read -r name full ab; do
   [ "$name" = "$cur" ] && continue
-  [ "$name" = "$up" ] && continue
-  mb=$(git merge-base "$head" "$full" 2>/dev/null) || continue
-  [ "$mb" = "$head" ] && continue
-  printf '%s\\t%s\\t%s\\t%s\\n' "$name" "$full" "$mb" "$(git rev-list --count "$mb..$head")"
+  n=\${ab#* }
+  [ "$n" = 0 ] && continue
+  printf '%s\\t%s\\t%s\\n' "$name" "$full" "$n"
 done
 `;
+
+// The merge-base of each shown branch, in one shell.
+const MERGE_BASES = `for ref; do printf '%s\\n' "$(git merge-base HEAD "$ref" 2>/dev/null)"; done`;
 
 export async function baseCandidates(cwd) {
   const r = await exec("sh", ["-c", CANDIDATES], { cwd, timeout: 60000 });
   if (r.code !== 0) throw new Error((r.stderr || "Not a git repository").trim());
   const [first, ...lines] = r.stdout.split("\n").filter(Boolean);
   const [repo, branch, head] = first.split("\t");
-  // One row per branch: local `epic/x` and `origin/epic/x` are the same idea;
-  // the closer one (fewer commits to HEAD) is the newer.
-  const byKey = new Map();
-  for (const line of lines) {
-    const [name, full, mergeBase, n] = line.split("\t");
-    const remote = full.startsWith("refs/remotes/");
-    const key = remote ? name.slice(name.indexOf("/") + 1) : name;
-    const row = { name, key, mergeBase, ahead: Number(n), remote };
-    const old = byKey.get(key);
-    if (!old || row.ahead < old.ahead || (row.ahead === old.ahead && old.remote && !remote)) byKey.set(key, row);
-  }
-  const rows = [...byKey.values()].sort((a, b) => a.ahead - b.ahead || a.name.localeCompare(b.name));
+  const rows = lines.map((line) => {
+    const [name, full, n] = line.split("\t");
+    return { name, key: name, full, ahead: Number(n), remote: false };
+  }).sort((a, b) => a.ahead - b.ahead || a.name.localeCompare(b.name));
   // Down to the trunk: anything further is older than main.
   const trunk = rows.findIndex((row) => TRUNKS.includes(row.key));
-  return { repo, branch: branch || null, head, candidates: (trunk >= 0 ? rows.slice(0, trunk + 1) : rows).slice(0, 25) };
+  const shown = (trunk >= 0 ? rows.slice(0, trunk + 1) : rows).slice(0, 25);
+  const mb = await exec("sh", ["-c", MERGE_BASES, "sh", ...shown.map((row) => row.full)], { cwd, timeout: 60000 });
+  const bases = mb.stdout.split("\n");
+  const candidates = shown
+    .map(({ full, ...row }, i) => ({ ...row, mergeBase: (bases[i] ?? "").trim() }))
+    .filter((row) => row.mergeBase);
+  return { repo, branch: branch || null, head, candidates };
 }
 
 // A ref someone typed: its merge-base with HEAD.

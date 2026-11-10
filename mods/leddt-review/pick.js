@@ -1,7 +1,7 @@
 // The Review button's popup: pick the branch to review against (the nearest
 // ancestor branch first, down to main), then start the session: a fresh Claude
-// reviewer running /code-review, the Findings pane beside the agent, and the
-// reviewer's pane under it.
+// reviewer running /code-review as a sub-agent (no pane of its own), and the
+// Findings pane beside the agent.
 // Props: { mode: "pick", origin: <terminal>, pane: <pane>, cwd, overlay }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -133,7 +133,7 @@ async function startSession(cx, p, info, base) {
     throw e;
   }
 
-  // The Findings pane right of the agent, the reviewer under it.
+  // The Findings pane right of the agent. The reviewer stays a sub-agent.
   const before = new Set(panes().map((x) => x.pane));
   run("pane.split", { direction: "right", pane: p.pane, mod: "leddt-review", props: { session: id } });
   let mine = null;
@@ -146,6 +146,5 @@ async function startSession(cx, p, info, base) {
     setShared(PANES, { ...(shared(PANES) ?? {}), [id]: mine.pane });
     run("pane.focus", { pane: mine.pane });
   }
-  run("terminal.keep", { terminal: s.reviewer, place: "down" });
   if (!mine) notify({ title: "Review started", body: `The Findings pane didn't appear; the reviewer is ${s.reviewer}.`, level: "warning" });
 }
