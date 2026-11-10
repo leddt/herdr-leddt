@@ -9,7 +9,7 @@
 // Requests live in state.json, so a reload or restart picks them up again.
 // Props: { session }.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand } from "herdr";
 import {
   BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath, archiveDir,
@@ -43,6 +43,9 @@ export class Findings {
     // Requests being driven: n → agent. One at a time per agent.
     this.running = new Map();
     this.open = new Set();
+    // Finding id → its instruction field's InputState, made on first click
+    // (an InputState can't be made in render).
+    this.inputs = new Map();
     this.saving = Promise.resolve();
     cx.spawn(async (cx) => {
       this.s = await loadState(this.id);
@@ -308,7 +311,8 @@ export class Findings {
         if (!f || !req.ids.includes(f.id)) continue;
         // Only an explicit true: a missing or odd value shows as not fixed, with its note.
         const ok = x.fixed === true;
-        f.fix = { ok, note: x.note ?? "" };
+        // The instruction it was fixed with, for the reviewer's verify.
+        f.fix = { ok, note: x.note ?? "", instruction: f.instruction ?? null };
         f.state = ok ? "Fixed" : "Triaged";
         seen.add(f.id);
       }
@@ -345,6 +349,21 @@ export class Findings {
   }
 
   picked(state) { return this.s.findings.filter((f) => f.checked && f.state === state); }
+
+  // A Triaged finding's instruction for the fix ("Create a Jira issue"…):
+  // the field appears on first click; it's saved on blur and Enter.
+  editInstruction(f, cx) {
+    let st = this.inputs.get(f.id);
+    if (!st) {
+      st = InputState.new({ placeholder: "How to fix it (optional), e.g. Create a Jira issue", value: f.instruction ?? "" });
+      st.on("change", (_e, cx) => { f.instruction = st.value().trim() || null; cx.notify(); });
+      st.on("blur", () => { this.save(); });
+      st.on("submit", () => { this.save(); });
+      this.inputs.set(f.id, st);
+    }
+    st.focus();
+    cx.notify();
+  }
 
   fix(cx) {
     const fs = this.picked("Triaged");
@@ -530,6 +549,16 @@ export class Findings {
       .when(on, (el) => el.child(svg("mods/leddt-review/check.svg").size(10).text_color(t.accent_foreground)));
   }
 
+  instructionField(f, t) {
+    const st = this.inputs.get(f.id);
+    const frame = div().id(`lr-ins-${f.id}`).ml(22).h(28).px(8).flex().items_center().rounded(6).border_1()
+      .border_color(t.input).bg(t.background).cursor_text();
+    if (st) return frame.child(Input.new(st).h_full().w_full().text_size(12).text_color(t.foreground));
+    return frame.on_click((_e, cx) => { cx.stop_propagation(); this.editInstruction(f, cx); })
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(f.instruction ? t.foreground : t.dim)
+        .child(f.instruction ?? "How to fix it (optional), e.g. Create a Jira issue"));
+  }
+
   badge(text, color, t, spin) {
     return h_flex().flex_none().h(18).px(6).gap(4).items_center().rounded(5).bg(color + "22").text_size(10.5).font_semibold().text_color(color)
       .when(Boolean(spin), (el) => el.child(svg("mods/leddt-review/spinner.svg").size(9).spin(900)))
@@ -570,6 +599,10 @@ export class Findings {
             .child(`→ ${f.triage.recommendation}`)))
           .when(Boolean(f.note) || f.verify?.ok === false || f.fix?.ok === false, (el) => el.child(div().text_size(11.5).text_color(t.blocked).whitespace_normal()
             .child(f.verify?.ok === false ? `Verify: not fixed. ${f.verify.note}` : f.fix?.ok === false ? `Not fixed: ${f.fix.note}` : f.note)))))
+      // Triaged: the person's instruction for the fix, sent with it.
+      .when(f.state === "Triaged", (el) => el.child(this.instructionField(f, t)))
+      .when(f.state !== "Triaged" && !done && Boolean(f.instruction ?? f.fix?.instruction), (el) => el.child(div().pl(22).text_size(11.5).text_color(t.muted).whitespace_normal()
+        .child(`Instruction: ${f.instruction ?? f.fix.instruction}`)))
       .when(expanded, (el) => el.child(v_flex().pl(22).gap(8).pt(2)
         .children([
           section("Finding", f.description),

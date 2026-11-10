@@ -130,9 +130,18 @@ export function triageTask(s, findings, file) {
   ].join("\n");
 }
 
+// The person's instruction for a finding, from the Findings pane.
+const withInstruction = (value) => (value ? { instruction: value } : {});
+
 export function fixTask(s, findings, file) {
+  const any = findings.some((f) => f.instruction);
   return [
     "Fix these code review findings (you triaged them earlier; your triage is included).",
+    ...(any ? [
+      'A finding with an "instruction" comes with the person\'s direction for it: do what it says, which takes precedence over ' +
+      'your triage and over a code fix (e.g. "Create a Jira issue" means create the issue, not change the code). ' +
+      'Report "fixed": true once you\'ve done what it asks, and say what you did in "note". Handle the others as usual.',
+    ] : []),
     "",
     "When you're done, write the outcome to this file as JSON, with your Write tool, one entry per id:",
     file,
@@ -140,14 +149,19 @@ export function fixTask(s, findings, file) {
     'Shape: {"fixed":[{"id":"R1-1","fixed":true,"note":"what you changed, or why you didn\'t"}]}',
     "",
     "Findings:",
-    JSON.stringify(findings.map((f) => ({ ...brief(f), triage: f.triage }))),
+    JSON.stringify(findings.map((f) => ({ ...brief(f), triage: f.triage, ...withInstruction(f.instruction) }))),
   ].join("\n");
 }
 
 export function verifyTask(s, findings, file) {
+  const any = findings.some((f) => f.fix?.instruction);
   return [
     "The author says these findings from your review are now fixed. Check each one against the current code " +
     "(including uncommitted changes). Don't change any code.",
+    ...(any ? [
+      'A finding with an "instruction" was handled the way the person asked instead of (or as well as) a code fix: ' +
+      'verify that the instruction was followed, from the fix note and the code, not that the code changed.',
+    ] : []),
     "",
     "Write the result to this file as JSON, with your Write tool, one entry per id:",
     file,
@@ -155,7 +169,7 @@ export function verifyTask(s, findings, file) {
     'Shape: {"verify":[{"id":"R1-1","verified":true,"note":"what you checked; if not fixed, what\'s still wrong"}]}',
     "",
     "Findings:",
-    JSON.stringify(findings.map((f) => ({ ...brief(f), fix_note: f.fix?.note ?? null }))),
+    JSON.stringify(findings.map((f) => ({ ...brief(f), fix_note: f.fix?.note ?? null, ...withInstruction(f.fix?.instruction) }))),
   ].join("\n");
 }
 

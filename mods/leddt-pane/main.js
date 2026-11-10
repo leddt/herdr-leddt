@@ -146,6 +146,10 @@ export default class Pane extends View {
   }
 
   button(t, id, icon, command, args) {
+    return this.action(t, id, icon, () => run(command, args));
+  }
+
+  action(t, id, icon, fn) {
     return div()
       .id(id)
       .p(3)
@@ -154,7 +158,7 @@ export default class Pane extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        run(command, args);
+        fn();
       })
       .child(svg(`mods/leddt-pane/${icon}.svg`).size(14));
   }
@@ -170,6 +174,15 @@ export default class Pane extends View {
     const machine = spaces().find((s) => s.tabs?.some((tb) => tb.id === p.tab))?.machine ?? null;
     const claude = p.terminal && (p.program?.key === "claude" || p.app === "claude-code");
     const isClaude = claude && !machine;
+    // A mod pane (Findings) has no folder: its tab's first terminal's, shown
+    // and used for its splits (a plain pane.split would start in the space's folder).
+    const mateCwd = p.mod ? panes().find((x) => x.tab === p.tab && x.terminal && x.cwd)?.cwd ?? null : null;
+    const split = (direction) => mateCwd
+      ? this.action(t, `ph-${direction[0]}-${pane}`, `split-${direction}`, () => {
+          run("pane.focus", { pane });
+          run("terminal.open", { place: direction, folder: mateCwd });
+        })
+      : this.button(t, `ph-${direction[0]}-${pane}`, `split-${direction}`, "pane.split", { direction, pane });
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
@@ -184,7 +197,7 @@ export default class Pane extends View {
       .on_click(() => run("pane.focus", { pane }))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
-      .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
+      .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd || mateCwd)))
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
@@ -240,8 +253,8 @@ export default class Pane extends View {
           })
           .child(svg("mods/leddt-pane/open-desktop.svg").size(14))))
       .when(this.hovered, el => el
-        .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
-        .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
+        .child(split("right"))
+        .child(split("down"))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
         .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })))
       // Last, at the right edge: the hover buttons appear to its left, so it never moves.

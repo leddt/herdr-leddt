@@ -1,7 +1,7 @@
 # herdr-leddt
 
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
-They're built on Herdr 0.1.13. The layout and six of the mods are clones of shipped ones, and the other five mods and the theme are new.
+They're built on Herdr 0.1.13. The layout and seven of the mods are clones of shipped ones, and the other five mods and the theme are new.
 
 Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
 
@@ -17,9 +17,12 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Tab bar (`tabs`) | `tabs` | `leddt-tabs` |
 | Pane header | `pane` | `leddt-pane` |
 | Right panel, Files (`files`) | `files` | `leddt-files` |
+| Right panel, Changes (`changes`) | `changes` | `leddt-changes` |
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
 
-Everything else (`workspace-chrome`, `changes`, `workspace-status`) is still the shipped mod.
+Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
+
+A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" dialog and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. Herdr's own tab creation (the + menu, shortcuts) still starts in the space's folder.
 
 ## Cloned mods
 
@@ -47,7 +50,7 @@ These only show for panes running Claude Code:
 - **Review button** (on hover, local only, needs the pane's folder): reopens this agent's latest review on the current branch: it focuses the Findings pane if it's open, or opens it again to the right. When there's none, or with Shift+click, it opens the `leddt-review` branch picker to start a new one. Everything after that is in `leddt-review`. Pane mods aren't told their own pane id, so the pane of each session is remembered in the shared value `leddt-review.panes` when it opens (`review.js`). Sessions from before that fall back to the review pane in the agent's tab.
 - `context.js` (new) reads context usage from the session transcript.
 
-The header also names a `leddt-review` pane "Review" instead of the mod's name.
+The header also names a `leddt-review` pane "Review" instead of the mod's name. For a mod pane, it shows the folder of the first terminal in its tab, and its split buttons open the new terminal there (`terminal.open`, since `pane.split` takes no folder).
 
 ### `leddt-tabs` (from `tabs`)
 
@@ -57,12 +60,17 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name.
 ### `leddt-files` (from `files`)
 
 - **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
+- **Folder of a mod pane:** see the note under the layout.
+
+### `leddt-changes` (from `changes`)
+
+- **Folder of a mod pane:** the only change. See the note under the layout.
 
 ### `leddt-menu` (from `menu`)
 
 - **Icon items** in a space's menu, opened only from `leddt-spaces`: **Choose icon…**, plus **Use project icon** and **Use letter avatar** when they would change something. They have their own `image.svg` icon. Tab and terminal menus still use the shipped `menu`.
 
-The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
+`leddt-changes` uses no icon file. The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
 
 ## New mods
 
@@ -99,7 +107,7 @@ A code-review loop for a Claude pane, started from the pane header's **Review** 
 - **Start:** starts a fresh `claude` with `hc run` in the same folder, as a sub-agent of the original agent (`--parent`, `--no-notify` so hc types nothing into the original, `--outlive-parent`). Its first message is `/code-review` scoped to `git diff <merge-base>` (committed changes since the base plus uncommitted ones). It gets `--add-dir` and an `Edit(...)` allow rule for its session folder, so it can write its results without asking. The **Findings** pane opens to the right of the original agent. The reviewer gets no pane: it stays a sub-agent of the original one.
 - **Findings pane:** one card per finding, with a checkbox (checked by default) and a title line that starts with the finding's id in an outlined tag. Under the title are its state, the triage status (Valid/Invalid/Partial) and impact (Trivial/Minor/Major/Critical), the file:line, and the recommendation. Click a card to expand the description, the failure scenario, the triage reason, and the fix and verification notes. The header links go to the original agent and the reviewer: they focus its pane, or peek at it in a popup when it has none (a sub-agent), as the agents list does. The header also shows and show progress (`done/total`, round). A line under the header says what's running, or that an agent needs you (a permission dialog).
 - **States:** New → Triaging → Triaged → Fixing → Fixed → Verifying → Verified. Verified is done: grayed out, struck through, unchecked. If a fix is declined or verification fails, the finding goes back to Triaged with the reason in red.
-- **Workflow:** once `/code-review` ends, the reviewer is asked to write its findings as JSON (`findings-r<round>.json`, ids `R<round>-<n>`). New findings go to the original agent for triage straight away (`triage-<n>.json`). **Fix** sends the checked Triaged findings to the original agent (`fix-<n>.json`). **Verify** asks the reviewer to recheck the checked Fixed findings (`verify-<n>.json`). **Loop** asks the same reviewer for another round, scoped to the same base, with repeats of earlier findings marked. **Triage** shows up when checked findings are still New (for example after a dismissed request). Each agent gets one request at a time. Others wait in order and go out when its turn ends; the line under the header shows them as "Next for …" with a dim dot. Buttons are disabled while their agent is busy, and Verify and Loop are disabled once the reviewer has ended.
+- **Workflow:** once `/code-review` ends, the reviewer is asked to write its findings as JSON (`findings-r<round>.json`, ids `R<round>-<n>`). New findings go to the original agent for triage straight away (`triage-<n>.json`). **Fix** sends the checked Triaged findings to the original agent (`fix-<n>.json`). Each Triaged finding has an optional instruction field (e.g. "Create a Jira issue"): it goes with the finding and takes precedence over the triage and a code fix, and Verify then checks that it was followed. Left empty, the agent fixes the finding as usual. The instruction is kept on the finding (`instruction` in `state.json`). **Verify** asks the reviewer to recheck the checked Fixed findings (`verify-<n>.json`). **Loop** asks the same reviewer for another round, scoped to the same base, with repeats of earlier findings marked. **Triage** shows up when checked findings are still New (for example after a dismissed request). Each agent gets one request at a time. Others wait in order and go out when its turn ends; the line under the header shows them as "Next for …" with a dim dot. Buttons are disabled while their agent is busy, and Verify and Loop are disabled once the reviewer has ended.
 - **Archive verified** (in the footer, when there are any): hides the Verified findings from the list. They stay in the session and its count; the header shows how many are archived.
 - **Done** (in the header): asks for confirmation (the shipped `confirm` dialog), then saves the session one last time, ends the reviewer, moves the session folder to `<Herdr home>/data/leddt-review-archive/<id>/` and closes the Findings pane. Requests still in progress are dropped. The Review button no longer finds an archived session, so the next click starts a new one. The confirmation reaches the pane through the command `leddt-review.archive-<id>`. Mod command names only take a-z and `-`, so each digit of the id is written as `-a`…`-j`.
 - **How requests work:** each one is a message sent with `hc send --wait`, ending with the path of the JSON file to write. The pane watches the session folder and applies a file as soon as it's valid. If the agent's turn ends without one, or the agent is gone, the request shows as failed with **Retry** (send again) and **Dismiss** (put the findings back in their previous state). The prompts are in `session.js`.

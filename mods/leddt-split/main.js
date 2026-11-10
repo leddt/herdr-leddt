@@ -6,12 +6,19 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { run, props, closeOverlay, theme, spaces, panes, focused, knownAgents, notify } from "herdr";
 
 // Where the space is now: the focused pane's live folder when focus is in this
-// space, else its first terminal's, else the folder the space was made in.
+// space (for a mod pane, which has none, its tab's first terminal's), else the
+// space's first terminal's, else the folder the space was made in.
 function spaceFolder(space) {
-  const f = focused();
-  if (f?.space === space.id && f.cwd) return f.cwd;
+  const f = focused(), ps = panes();
+  if (f?.space === space.id) {
+    const pane = f.pane ? ps.find(p => p.pane === f.pane) : null;
+    if (pane?.mod) {
+      const mate = ps.find(p => p.tab === pane.tab && p.terminal && p.cwd);
+      if (mate) return mate.cwd;
+    } else if (f.cwd) return f.cwd;
+  }
   const tabIds = new Set(space.tabs.map(t => t.id));
-  const first = panes().find(p => tabIds.has(p.tab) && p.terminal && p.cwd);
+  const first = ps.find(p => tabIds.has(p.tab) && p.terminal && p.cwd);
   return first?.cwd || space.folder || undefined;
 }
 
