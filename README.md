@@ -18,7 +18,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Right panel, Files (`files`) | `files` | `leddt-files` |
 | Right panel, Changes (`changes`) | `changes` | `leddt-changes` |
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
-| Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 44px) |
+| Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 32px) |
 | Status bar | `status` block | `status-row`: a **new** `leddt-usage` block (370px) at the left, then `workspace-status` |
 
 Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
@@ -127,7 +127,7 @@ A code-review loop for a Claude pane, started from the pane header's **Review** 
 
 ### `leddt-command`
 
-A command line under the shown tab's panes. Type a command and press Enter: a new terminal opens below the focused pane of the shown tab (its first pane when the focus is elsewhere), in that pane's folder (for a mod pane, the tab's first terminal's), and runs it. The terminal is named after the command and stays at a shell prompt when the command ends: on Windows, PowerShell 7 (`pwsh -NoExit -Command`, or Windows PowerShell when `pwsh` isn't installed); elsewhere and on other machines, `$SHELL -ic`, then an interactive `$SHELL`. Up/Down go through the last 100 commands (the mod's `localStorage`), Esc clears the field.
+A full-width command line between the panes and the status bar, with only a top border. It starts with a terminal icon and the folder the command will run in, then `>`, so it doesn't read as an agent's prompt. Type a command and press Enter: a new terminal opens below the focused pane of the shown tab (its first pane when the focus is elsewhere), in that pane's folder (for a mod pane, the tab's first terminal's), and runs it. The terminal is named after the command and stays at a shell prompt when the command ends: on Windows, PowerShell 7 (`pwsh -NoExit -Command`, or Windows PowerShell when `pwsh` isn't installed); elsewhere and on other machines, `$SHELL -ic`, then an interactive `$SHELL`. Up/Down go through the last 100 commands (the mod's `localStorage`), Esc clears the field.
 
 ### `leddt-split`
 

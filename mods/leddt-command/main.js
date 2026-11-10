@@ -95,14 +95,14 @@ export default class CommandLine extends View {
     const shown = shownTab();
     const where = shown ? folder(target(shown.tab).cwd) : "";
     const color = this.focused ? t.accent : t.dim;
-    return h_flex().id("leddt-command").size_full().px(8).pb(8).items_center()
+    return h_flex().id("leddt-command").size_full().items_center()
       .on_key_down((e, cx) => {
         if (e.key === "up") { this.browse(1); cx.stop_propagation(); cx.notify(); }
         else if (e.key === "down") { this.browse(-1); cx.stop_propagation(); cx.notify(); }
         else if (e.key === "escape") { this.at = null; this.input.set_value(""); cx.stop_propagation(); cx.notify(); }
       })
-      .child(h_flex().flex_1().h_full().min_w(0).gap(8).pl(12).pr(4).items_center().rounded(10)
-        .border_1().border_color(this.focused ? t.accent : t.border).bg(t.background)
+      .child(h_flex().flex_1().h_full().min_w(0).gap(6).pl(8).pr(2).items_center()
+        .border_t_1().border_color(this.focused ? t.accent : t.border).bg(t.background)
         .child(svg("mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(color))
         .child(h_flex().flex_none().max_w(320).min_w(0).gap(4).items_center().text_size(12.8).text_color(color)
           .when(!!where, el => el.child(div().min_w(0).truncate().child(where)))
