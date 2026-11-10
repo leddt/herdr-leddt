@@ -5,11 +5,12 @@ import { v_flex, h_flex } from "gpui-base";
 import { theme, exec, panes } from "herdr";
 import { ACTIONS, FALLBACK_AGENT, installedAgents, visibleAgents, writePrompt } from "./agent.js";
 
-const JQL = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+// Open issues, and the ones closed in the last 7 days.
+const JQL = "assignee = currentUser() AND (statusCategory != Done OR statusCategoryChangedDate >= -7d) ORDER BY updated DESC";
 const FIELDS = "summary,status,project,issuetype,updated";
 const PAGES = 5; // 100 issues per page
-// In-progress first, then to do, then anything else.
-const CATEGORY_ORDER = { indeterminate: 0, new: 1 };
+// In-progress first, then to do, then anything else, then done.
+const CATEGORY_ORDER = { indeterminate: 0, new: 1, done: 3 };
 // The filter bars, top to bottom: the issue field each one filters on, and where its choice is kept.
 const FILTERS = {
   status: { label: "Statut", storage: "hiddenStatuses" },
@@ -79,7 +80,7 @@ async function transitions(key) {
 }
 
 // Status order: the person's dragged order first, then any status it doesn't know yet,
-// in progress first, then to do, then by name. `order` is a list of status names.
+// in progress first, then to do, then others, then done, then by name. `order` is a list of status names.
 function statusCompare(order) {
   const rank = s => CATEGORY_ORDER[s.category] ?? 2;
   return (a, b) => {
@@ -428,8 +429,8 @@ export default class Jira extends View {
     });
   }
 
-  // Applies a transition. The row moves to its new status at once (leaves the list for a
-  // done one); if twg refuses, it goes back and the menu shows why. Then the list refreshes.
+  // Applies a transition. The row moves to its new status at once; if twg refuses, it
+  // goes back and the menu shows why. Then the list refreshes.
   transition(cx, issue, tr) {
     if (this.moving) return;
     this.moving = issue.key;
@@ -439,7 +440,6 @@ export default class Jira extends View {
         await twgJson(["jira", "workitem", "transition", "--id", issue.key, "--transition-id", tr.id]);
         issue.status = tr.to;
         issue.category = tr.category;
-        if (tr.category === "done") this.issues = this.issues?.filter(i => i !== issue) ?? null;
         this.statusMenu = null;
         this.transitions.delete(issue.key);
         this.moving = null;
