@@ -1,6 +1,7 @@
 // The Findings pane: lists a review session's findings and drives the
 // workflow. Each finding moves New → Triaging → Triaged → Fixing → Fixed →
-// Verifying → Verified (done, grayed out).
+// Verifying → Verified (done, grayed out). New, Triaged and Fixed findings can
+// also be Ignored, which counts as done too (and Restore puts them back).
 //
 // Every step is a "request": a message typed into one of the two agents with
 // `hc send`, asking it to write a JSON file into the session folder. The pane
@@ -17,6 +18,10 @@ import {
 } from "./session.js";
 
 const WHO = { reviewer: "Reviewer", origin: "Agent" };
+// Done: grayed out, out of "All", and what Archive hides.
+const DONE = new Set(["Verified", "Ignored"]);
+// What Ignore takes: findings no request is working on, not done yet.
+const IGNORABLE = new Set(["New", "Triaged", "Fixed"]);
 
 // Mod command names take only a-z and -: a session id's digits become -a..-j.
 const cmdId = (id) => id.replace(/[0-9]/g, (d) => "-" + "abcdefghij"[Number(d)]);
@@ -66,6 +71,7 @@ export class Findings {
         if (c === "fix") this.fix(cx);
         else if (c === "verify") this.verify(cx);
         else if (c === "loop") this.loop(cx);
+        else if (c === "ignore") this.ignore(cx);
         else if (c === "triage") this.triageNew(cx);
         cx.notify();
       }
@@ -391,9 +397,27 @@ export class Findings {
     this.request(cx, "review", "reviewer", [], () => loopTask(this.s));
   }
 
-  // Verified findings leave the list; they stay in the session (and its count).
-  archiveVerified(cx) {
-    for (const f of this.s.findings) if (f.state === "Verified") f.archived = true;
+  // The checked findings that can be: done, without asking an agent.
+  ignorable() { return this.s.findings.filter((f) => f.checked && IGNORABLE.has(f.state)); }
+
+  ignore(cx) {
+    for (const f of this.ignorable()) { f.ignoredFrom = f.state; f.state = "Ignored"; f.checked = false; }
+    this.save();
+    cx.notify();
+  }
+
+  // Back to where it was ignored from, checked again.
+  restore(f, cx) {
+    f.state = f.ignoredFrom ?? "New";
+    delete f.ignoredFrom;
+    f.checked = true;
+    this.save();
+    cx.notify();
+  }
+
+  // Done findings (verified or ignored) leave the list; they stay in the session (and its count).
+  archiveDone(cx) {
+    for (const f of this.s.findings) if (DONE.has(f.state)) f.archived = true;
     this.save();
     cx.notify();
   }
@@ -465,12 +489,13 @@ export class Findings {
     const alive = new Set(terminals().filter((x) => x.state === "live").map((x) => x.address));
     const reviewerBusy = Boolean(this.pending("reviewer")), originBusy = Boolean(this.pending("origin"));
     const toFix = this.picked("Triaged").length, toVerify = this.picked("Fixed").length, toTriage = this.picked("New").length;
-    const total = s.findings.length, doneCount = s.findings.filter((f) => f.state === "Verified").length;
-    const open = s.findings.filter((f) => f.state !== "Verified");
+    const total = s.findings.length, doneCount = s.findings.filter((f) => DONE.has(f.state)).length;
+    const open = s.findings.filter((f) => !DONE.has(f.state));
+    const toIgnore = this.ignorable().length;
     const allChecked = open.length > 0 && open.every((f) => f.checked);
     const shown = s.findings.filter((f) => !f.archived);
     const archived = total - shown.length;
-    const toArchive = shown.filter((f) => f.state === "Verified").length;
+    const toArchive = shown.filter((f) => DONE.has(f.state)).length;
 
     const button = (id, label, enabled, primary, action, tip) => h_flex().id(id).h(26).px(10).items_center().rounded(7)
       .text_size(12).font_medium().flex_none()
@@ -535,8 +560,9 @@ export class Findings {
         .child(h_flex().id("lr-all").gap(6).items_center().cursor_pointer().text_size(11.5).text_color(t.muted)
           .on_click((_e, cx) => { for (const f of open) f.checked = !allChecked; this.save(); cx.notify(); })
           .child(this.box(allChecked, t)).child("All"))
-        .when(toArchive > 0, (el) => el.child(button("lr-archive", `Archive verified (${toArchive})`, true, false, (cx) => this.archiveVerified(cx), "Hide the verified findings from the list")))
+        .when(toArchive > 0, (el) => el.child(button("lr-archive", `Archive done (${toArchive})`, true, false, (cx) => this.archiveDone(cx), "Hide the verified and ignored findings from the list")))
         .child(div().flex_1())
+        .when(toIgnore > 0, (el) => el.child(button("lr-ignore", `Ignore (${toIgnore})`, true, false, (cx) => this.ignore(cx), "Mark the checked findings as ignored: done, without a fix")))
         .when(toTriage > 0, (el) => el.child(button("lr-triage", `Triage (${toTriage})`, !originBusy, false, (cx) => this.triageNew(cx), "Ask the agent to triage the checked new findings")))
         .child(button("lr-fix", toFix ? `Fix (${toFix})` : "Fix", toFix > 0 && !originBusy, true, (cx) => this.fix(cx), "Ask the agent to fix the checked triaged findings"))
         .child(button("lr-verify", toVerify ? `Verify (${toVerify})` : "Verify", toVerify > 0 && !reviewerBusy && alive.has(s.reviewer), false, (cx) => this.verify(cx), "Ask the reviewer to check the checked fixed findings"))
@@ -566,9 +592,9 @@ export class Findings {
   }
 
   card(f, t) {
-    const done = f.state === "Verified";
+    const done = DONE.has(f.state);
     const busy = Boolean(BUSY_BACK[f.state]);
-    const stateColor = { New: t.muted, Triaging: t.working, Triaged: t.accent, Fixing: t.working, Fixed: t.done, Verifying: t.working, Verified: t.dim }[f.state] ?? t.muted;
+    const stateColor = { New: t.muted, Triaging: t.working, Triaged: t.accent, Fixing: t.working, Fixed: t.done, Verifying: t.working, Verified: t.dim, Ignored: t.dim }[f.state] ?? t.muted;
     const impact = f.triage?.impact, status = f.triage?.status;
     const impactColor = { Critical: t.ansi1, Major: t.blocked, Minor: t.accent, Trivial: t.dim }[impact] ?? t.dim;
     const statusColor = { Valid: t.ansi2, Partial: t.blocked, Invalid: t.dim }[status] ?? t.dim;
@@ -594,7 +620,12 @@ export class Findings {
             .child(this.badge(f.state, stateColor, t, busy))
             .when(Boolean(status), (el) => el.child(this.badge(status, statusColor, t)))
             .when(Boolean(impact), (el) => el.child(this.badge(impact, impactColor, t)))
-            .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(where))))
+            .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(where)))
+            .when(f.state === "Ignored", (el) => el.child(div().id(`lr-restore-${f.id}`).px(5).h(18).flex().items_center().rounded(5)
+              .text_size(10.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+              .tooltip(`Put it back to ${f.ignoredFrom ?? "New"}`)
+              .on_click((_e, cx) => { cx.stop_propagation(); this.restore(f, cx); })
+              .child("Restore"))))
           .when(Boolean(f.triage?.recommendation), (el) => el.child(div().text_size(12).text_color(t.foreground).whitespace_normal()
             .child(`→ ${f.triage.recommendation}`)))
           .when(Boolean(f.note) || f.verify?.ok === false || f.fix?.ok === false, (el) => el.child(div().text_size(11.5).text_color(t.blocked).whitespace_normal()
