@@ -51,6 +51,33 @@ async function search() {
   }));
 }
 
+// Where an issue can go from its status (its workflow decides), via twg's read-only discovery.
+const CATEGORY_KEYS = { "to do": "new", "in progress": "indeterminate", done: "done" };
+async function twgJson(args) {
+  let r;
+  try { r = await exec("twg", [...args, "-o", "json"], { timeout: 60000 }); }
+  catch (e) { throw new Error(String(e?.message ?? e)); }
+  let data = null;
+  try { data = JSON.parse(r.stdout); } catch {}
+  if (r.code !== 0) {
+    const msg = data?.error?.message ?? (r.stderr || r.stdout || "").split(/\r?\n/).map(l => l.trim()).find(Boolean) ?? `code ${r.code}`;
+    throw new Error(`twg : ${msg}`);
+  }
+  return data;
+}
+
+async function transitions(key) {
+  const data = await twgJson(["jira", "workitem", "transition", "--id", key]);
+  return (data?.data?.transitions ?? []).map(x => ({
+    id: String(x.id),
+    name: x.name ?? "",
+    to: x.toName ?? x.to?.name ?? x.name ?? "",
+    category: CATEGORY_KEYS[String(x.category ?? x.to?.statusCategory?.name ?? "").toLowerCase()] ?? "",
+    // A transition with required screen fields can't be done from here: the browser does it.
+    needsFields: Object.values(x.fields ?? {}).some(f => f?.required) || (Array.isArray(x.fields) && x.fields.some(f => f?.required)),
+  }));
+}
+
 // Status order: the person's dragged order first, then any status it doesn't know yet,
 // in progress first, then to do, then by name. `order` is a list of status names.
 function statusCompare(order) {
@@ -100,6 +127,10 @@ export default class Jira extends View {
     this.installed = []; // knownAgents() installed here, most picked first: for new tabs
     this.sending = null; // the issue whose prompt is being written
     this.copied = null; // the issue whose key was just copied: its icon shows a check
+    // The status menu open under a row: { key, list (null while loading), error }.
+    this.statusMenu = null;
+    this.transitions = new Map(); // issue key → its transitions, until the next refresh
+    this.moving = null; // the issue whose transition is being applied
     // Statuses and issue types (by name, across projects) the person chose not to see.
     this.hidden = {};
     for (const kind of Object.keys(FILTERS)) {
@@ -118,6 +149,8 @@ export default class Jira extends View {
       try {
         this.issues = await search();
         this.error = null;
+        // Statuses may have moved (here or in Jira): transitions are asked again.
+        this.transitions.clear();
       } catch (e) {
         this.error = String(e?.message ?? e);
       }
@@ -294,6 +327,7 @@ export default class Jira extends View {
   launch(cx, issue, action, target, newTab = false) {
     target ??= this.autoTarget(newTab);
     if (!target) {
+      this.statusMenu = null;
       this.picking = { key: issue.key, action };
       return;
     }
@@ -375,10 +409,96 @@ export default class Jira extends View {
       .child(option("pick-cancel", null, "Annuler", null, null, () => { this.picking = null; }));
   }
 
+  // Opens (or closes) the status menu under the row; the transitions load the first time.
+  openStatusMenu(cx, issue) {
+    if (this.statusMenu?.key === issue.key) { this.statusMenu = null; return; }
+    this.picking = null;
+    const cached = this.transitions.get(issue.key);
+    this.statusMenu = { key: issue.key, list: cached ?? null, error: null };
+    if (cached) return;
+    cx.spawn(async cx => {
+      try {
+        const list = await transitions(issue.key);
+        this.transitions.set(issue.key, list);
+        if (this.statusMenu?.key === issue.key) this.statusMenu.list = list;
+      } catch (e) {
+        if (this.statusMenu?.key === issue.key) { this.statusMenu.list = []; this.statusMenu.error = String(e?.message ?? e); }
+      }
+      cx.notify();
+    });
+  }
+
+  // Applies a transition. The row moves to its new status at once (leaves the list for a
+  // done one); if twg refuses, it goes back and the menu shows why. Then the list refreshes.
+  transition(cx, issue, tr) {
+    if (this.moving) return;
+    this.moving = issue.key;
+    const before = { status: issue.status, category: issue.category };
+    cx.spawn(async cx => {
+      try {
+        await twgJson(["jira", "workitem", "transition", "--id", issue.key, "--transition-id", tr.id]);
+        issue.status = tr.to;
+        issue.category = tr.category;
+        if (tr.category === "done") this.issues = this.issues?.filter(i => i !== issue) ?? null;
+        this.statusMenu = null;
+        this.transitions.delete(issue.key);
+        this.moving = null;
+        this.refresh(cx);
+      } catch (e) {
+        Object.assign(issue, before);
+        this.moving = null;
+        this.statusMenu = { key: issue.key, list: this.transitions.get(issue.key) ?? [], error: String(e?.message ?? e) };
+      }
+      cx.notify();
+    });
+  }
+
+  // At the right of the first line, on hover: opens the status menu.
+  statusButton(t, issue) {
+    const open = this.statusMenu?.key === issue.key;
+    return h_flex().id(`status-${issue.key}`).h(18).px(6).gap(4).flex_none().items_center().rounded(5)
+      .text_size(10.5).text_color(open ? t.foreground : t.muted).border(1).border_color(open ? t.accent : t.border).bg(t.background)
+      .hover(s => s.bg(t.raised).text_color(t.foreground))
+      .tooltip(`Changer le statut (${issue.status})`)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openStatusMenu(cx, issue); cx.notify(); })
+      .child(div().size(6).rounded(3).flex_none().bg(this.dot(t, issue.category)))
+      .child("Statut")
+      .child(svg("mods/leddt-files/chevron-down.svg").size(9).flex_none().text_color(t.dim));
+  }
+
+  // Under the row: the issue's transitions, its target status first, with its category's dot.
+  statusPicker(t, issue) {
+    const m = this.statusMenu;
+    const option = (id, dot, label, detail, act, tip) =>
+      h_flex().id(id).h(24).px(8).gap(7).items_center().rounded(5).text_size(11.5).cursor_pointer()
+        .hover(s => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); act(cx); cx.notify(); })
+        .when(!!tip, el => el.tooltip(tip))
+        .when(!!dot, el => el.child(div().size(6).rounded(3).flex_none().bg(dot)))
+        .child(div().flex_none().text_color(t.foreground).child(label))
+        .when(!!detail, el => el.child(div().text_color(t.dim).truncate().child(detail)));
+    const list = (m.list ?? []).filter(tr => tr.to !== issue.status);
+    const busy = this.moving === issue.key;
+    return v_flex().ml(34).mr(12).mb(4).p(4).gap(1).rounded(7).border(1).border_color(t.border).bg(t.popover)
+      .child(h_flex().px(8).py(3).gap(6).items_center().text_size(10.5).text_color(t.dim)
+        .child(div().flex_1().truncate().child(`${issue.key} : ${issue.status} →`))
+        .when(m.list === null || busy, el => el.child(svg("mods/workspace-chrome/spinner.svg").size(10).flex_none().text_color(t.working).spin(900))))
+      .when(m.list === null, el => el.child(div().px(8).py(3).text_size(11.5).text_color(t.dim).child("Chargement des transitions…")))
+      .when(!!m.error, el => el.child(div().px(8).py(3).text_size(11).text_color(t.blocked).whitespace_normal().child(m.error)))
+      .when(m.list !== null && !list.length && !m.error, el => el.child(div().px(8).py(3).text_size(11.5).text_color(t.dim).child("Aucune transition possible.")))
+      .children(list.map(tr => tr.needsFields
+        ? option(`tr-${issue.key}-${tr.id}`, this.dot(t, tr.category), tr.to, "dans Jira…", cx => { if (issue.url) cx.open_url(issue.url); },
+            "Cette transition demande des champs : elle s'ouvre dans Jira")
+        : option(`tr-${issue.key}-${tr.id}`, this.dot(t, tr.category), tr.to, tr.name !== tr.to ? tr.name : null,
+            cx => this.transition(cx, issue, tr))))
+      .when(!!m.error && !!issue.url, el => el.child(option("tr-browser", null, "Ouvrir dans Jira", null, cx => cx.open_url(issue.url))))
+      .child(option("tr-cancel", null, "Annuler", null, () => { this.statusMenu = null; }));
+  }
+
   // The status is the sub-group's header, so the row shows type and key only.
-  // On hover, the agent buttons show at the right of the second line.
+  // On hover, the status button shows at the right of the first line, and the agent
+  // buttons at the right of the second.
   row(t, i) {
-    const active = this.hoverKey === i.key || this.picking?.key === i.key;
+    const active = this.hoverKey === i.key || this.picking?.key === i.key || this.statusMenu?.key === i.key;
     const target = active ? this.autoTarget(false) : null;
     return v_flex()
       .child(v_flex().id(`issue-${i.key}`).pl(34).pr(12).py(5).gap(2).hover(s => s.bg(t.hover)).cursor_pointer()
@@ -388,7 +508,11 @@ export default class Jira extends View {
           cx.notify();
         })
         .on_click((_e, cx) => { if (i.url) cx.open_url(i.url); })
-        .child(div().text_size(12.5).text_color(t.foreground).truncate().child(i.summary))
+        .child(h_flex().gap(6).items_center()
+          .child(div().flex_1().min_w(0).text_size(12.5).text_color(t.foreground).truncate().child(i.summary))
+          .when(this.moving === i.key, el => el.child(
+            svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
+          .when(active && this.moving !== i.key, el => el.child(this.statusButton(t, i))))
         .child(h_flex().h(18).gap(6).items_center().text_size(11)
           .when(!!i.type, el => el.child(this.typeTag(t, i.type)))
           .child(div().text_color(t.dim).flex_none().child(i.key))
@@ -397,7 +521,8 @@ export default class Jira extends View {
           .when(this.sending === i.key, el => el.child(
             svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
           .when(active && this.sending !== i.key, el => el.children(ACTIONS.map(a => this.agentButton(t, i, a, target))))))
-      .when(this.picking?.key === i.key, el => el.child(this.picker(t, i)));
+      .when(this.picking?.key === i.key, el => el.child(this.picker(t, i)))
+      .when(this.statusMenu?.key === i.key, el => el.child(this.statusPicker(t, i)));
   }
 
   // Folds are keyed "<project>/<status>", next to the projects' own keys.
