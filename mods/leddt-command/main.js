@@ -1,9 +1,10 @@
 // A command line under the shown tab's panes: type a command, Enter opens a new terminal
 // below the focused pane (in the tab's folder) that runs it, then stays at a shell prompt.
-// Up/Down go through the commands run before; Esc clears.
-import { View, div } from "gpui-kit";
+// Up/Down go through the commands run before; Esc clears. It starts with a terminal icon and
+// the folder the command will run in, then ">", so it doesn't read as an agent's prompt.
+import { View, div, svg } from "gpui-kit";
 import { h_flex, InputState, Input } from "gpui-base";
-import { run, theme, spaces, panes, focused, exec, window, notify } from "herdr";
+import { run, theme, spaces, panes, focused, exec, window, notify, home } from "herdr";
 
 const HISTORY = 100;
 
@@ -22,6 +23,15 @@ function target(tab) {
   const pane = ps.find(p => p.pane === f?.pane) ?? ps[0] ?? null;
   const cwd = (pane?.terminal && pane.cwd) || ps.find(p => p.terminal && p.cwd)?.cwd || undefined;
   return { pane, cwd };
+}
+
+// The folder as shown before the ">": the home folder as "~".
+function folder(cwd) {
+  if (!cwd) return "";
+  const h = home();
+  if (!h) return cwd;
+  if (cwd === h) return "~";
+  return cwd.startsWith(h + "/") || cwd.startsWith(h + "\\") ? "~" + cwd.slice(h.length) : cwd;
 }
 
 // What runs the command: the person's shell, which stays open once the command ends.
@@ -82,6 +92,9 @@ export default class CommandLine extends View {
 
   render() {
     const t = theme();
+    const shown = shownTab();
+    const where = shown ? folder(target(shown.tab).cwd) : "";
+    const color = this.focused ? t.accent : t.dim;
     return h_flex().id("leddt-command").size_full().px(8).pb(8).items_center()
       .on_key_down((e, cx) => {
         if (e.key === "up") { this.browse(1); cx.stop_propagation(); cx.notify(); }
@@ -90,7 +103,10 @@ export default class CommandLine extends View {
       })
       .child(h_flex().flex_1().h_full().min_w(0).gap(8).pl(12).pr(4).items_center().rounded(10)
         .border_1().border_color(this.focused ? t.accent : t.border).bg(t.background)
-        .child(div().flex_none().text_size(13).font_semibold().text_color(this.focused ? t.accent : t.dim).child("›"))
+        .child(svg("mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(color))
+        .child(h_flex().flex_none().max_w(320).min_w(0).gap(4).items_center().text_size(12.8).text_color(color)
+          .when(!!where, el => el.child(div().min_w(0).truncate().child(where)))
+          .child(div().flex_none().font_semibold().child(">")))
         .child(Input.new(this.input).flex_1().min_w(0).h_full().text_size(12.8).text_color(t.foreground)));
   }
 }
