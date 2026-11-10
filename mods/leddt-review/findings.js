@@ -566,7 +566,7 @@ export class Findings {
         .when(toTriage > 0, (el) => el.child(button("lr-triage", `Triage (${toTriage})`, !originBusy, false, (cx) => this.triageNew(cx), "Ask the agent to triage the checked new findings")))
         .child(button("lr-fix", toFix ? `Fix (${toFix})` : "Fix", toFix > 0 && !originBusy, true, (cx) => this.fix(cx), "Ask the agent to fix the checked triaged findings"))
         .child(button("lr-verify", toVerify ? `Verify (${toVerify})` : "Verify", toVerify > 0 && !reviewerBusy && alive.has(s.reviewer), false, (cx) => this.verify(cx), "Ask the reviewer to check the checked fixed findings"))
-        .child(button("lr-loop", "Loop", !reviewerBusy && alive.has(s.reviewer), false, (cx) => this.loop(cx), "Ask the same reviewer for another round")));
+        .child(button("lr-loop", "New round", !reviewerBusy && alive.has(s.reviewer), false, (cx) => this.loop(cx), "Ask the same reviewer for another round")));
   }
 
   box(on, t, disabled) {
