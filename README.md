@@ -61,10 +61,12 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name. 
 
 - **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
 - **Folder of a mod pane:** see the note under the layout.
+- **Opens a file asked for by `leddt-changes`** (a double-click there): it shows the file and opens its folders in the tree, so ← goes back to it. The request is the shared value `leddt-files.open` (`{ path, on, at }`); it's only honoured within 10s and once, since shared values persist. A file outside the folder Files is browsing (when the focused pane is below the repo root) gets a warning instead.
 
 ### `leddt-changes` (from `changes`)
 
 - **Folder of a mod pane:** see the note under the layout.
+- **Double-click a file** to see all of it in the Files panel (`leddt-files`), which the panel switches to. The first click still opens its diff here.
 - **Tree view:** a button at the right of the header switches the file list between the flat list and a tree of folders. In the tree, folders come first, then files, both by name. A folder with only one subfolder and no files shares its row (`src/app/components`). Each folder shows its files' +/− totals; click it to fold, and a folded folder also shows how many files it holds. The view is remembered (the mod's `localStorage`); folds last until Herdr restarts. Its icons (`list`, `list-tree`, and the chevrons and folder copied from `leddt-files`) are in the mod's folder.
 
 ### `leddt-menu` (from `menu`)

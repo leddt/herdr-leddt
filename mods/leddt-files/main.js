@@ -1,7 +1,10 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared, notify } from "herdr";
+
+// Set by leddt-changes (double-click on a changed file): { path (absolute), on, at }.
+const OPEN_IN_FILES = "leddt-files.open";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -174,8 +177,47 @@ export default class Files extends View {
     return out;
   }
 
+  // A file asked for elsewhere (a double-click in leddt-changes): shown here, its
+  // folders opened in the tree. Only a fresh request, once: the value persists.
+  openRequested(cx) {
+    const req = shared(OPEN_IN_FILES);
+    if (!req?.path || req.at === this.handledAt || Date.now() - req.at > 10000) return;
+    this.handledAt = req.at;
+    if (!this.root || (req.on ?? null) !== (this.on ?? null)) return;
+    const norm = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const win = window()?.platform === "windows", same = (a, b) => win ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const root = norm(this.root), file = norm(req.path);
+    // Files browses the focused pane's folder, which can be below the repo root.
+    if (!same(file.slice(0, root.length + 1), root + "/")) {
+      notify({ title: "Not in the Files folder", body: `${file} is outside ${root}.`, level: "warning" });
+      return;
+    }
+    const rel = file.slice(root.length + 1), parts = rel.split("/");
+    // This runs in render, where cx.notify() throws: no toggle() here. The folders
+    // open at once and load in a task, which notifies when it's done.
+    const missing = [];
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join("/");
+      this.folders.add(folder);
+      if (!this.entries.has(folder) && !this.pending.has(folder)) { this.pending.add(folder); missing.push(folder); }
+    }
+    if (missing.length) {
+      const context = this.context;
+      cx.spawn(async cx => {
+        for (const folder of missing) {
+          try { await this.loadFolder(folder, context); }
+          catch (e) { if (this.current(context)) this.error = String(e); }
+          finally { if (this.context === context) this.pending.delete(folder); }
+        }
+        cx.notify();
+      });
+    }
+    this.show(rel, cx);
+  }
+
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
+    this.openRequested(cx);
     const t = theme();
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)

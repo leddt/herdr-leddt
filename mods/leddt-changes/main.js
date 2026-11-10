@@ -1,6 +1,9 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, setShared } from "herdr";
+
+// Files (leddt-files) shows a file asked for here: { path (absolute), on, at }.
+const OPEN_IN_FILES = "leddt-files.open";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -204,6 +207,15 @@ export default class Changes extends View {
     cx.notify();
   }
 
+  // A double-click: the whole file in the Files panel (the first click already opened its diff).
+  clickFile(e, path, cx) {
+    if (e.click_count !== 2) return this.pick(path, cx);
+    if (!this.root) return;
+    setShared(OPEN_IN_FILES, { path: `${this.root}/${path}`, on: this.on ?? null, at: Date.now() });
+    run("layout.select", { stack: "panel-body", child: "files" });
+    run("layout.show", { id: "panel" });
+  }
+
   setTree(on) {
     this.tree = on;
     try { localStorage.setItem("view", on ? "tree" : "list"); } catch {}
@@ -223,7 +235,7 @@ export default class Changes extends View {
   // A changed file in the flat list: its folder dimmed, then its name.
   listRow(f, t) {
     const parts = f.path.split("/"), name = parts.pop();
-    return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+    return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((e, cx) => this.clickFile(e, f.path, cx))
       .child(this.statusLetter(f, t))
       .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
       .children(this.counts(f.add, f.del, t));
@@ -244,7 +256,7 @@ export default class Changes extends View {
     }
     const f = r.file;
     // A file lines up with its folder's name: past the chevron's room.
-    return h_flex().id(`change-${f.path}`).h(28).flex_none().pl(indent + 18).pr(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+    return h_flex().id(`change-${f.path}`).h(28).flex_none().pl(indent + 18).pr(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((e, cx) => this.clickFile(e, f.path, cx))
       .child(this.statusLetter(f, t))
       .child(div().flex_1().min_w(0).truncate().child(r.name))
       .children(this.counts(f.add, f.del, t));
