@@ -1,4 +1,5 @@
-// Jira issues assigned to me that aren't done, grouped by project.
+// Jira issues assigned to me, open or closed this week, grouped by project, each with
+// its ancestors (epic > parent > it).
 // Asks the twg CLI (already signed in to Atlassian), so the mod holds no token.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -7,8 +8,10 @@ import { ACTIONS, FALLBACK_AGENT, installedAgents, visibleAgents, writePrompt } 
 
 // Open issues, and the ones closed in the last 7 days.
 const JQL = "assignee = currentUser() AND (statusCategory != Done OR statusCategoryChangedDate >= -7d) ORDER BY updated DESC";
-const FIELDS = "summary,status,project,issuetype,updated";
+const FIELDS = "summary,status,project,issuetype,updated,parent";
 const PAGES = 5; // 100 issues per page
+// How many levels above an issue are looked up (sub-task > task > epic > initiative…).
+const ANCESTOR_LEVELS = 4;
 // In-progress first, then to do, then anything else, then done.
 const CATEGORY_ORDER = { indeterminate: 0, new: 1, done: 3 };
 // The filter bars, top to bottom: the issue field each one filters on, and where its choice is kept.
@@ -18,8 +21,8 @@ const FILTERS = {
 };
 
 // One page of `twg jira workitem query`. (--select would drop pageInfo, so the full payload.)
-async function page(after) {
-  const args = ["jira", "workitem", "query", "--jql", JQL, "--fields", FIELDS, "--limit", "100",
+async function page(after, jql = JQL, fields = FIELDS) {
+  const args = ["jira", "workitem", "query", "--jql", jql, "--fields", fields, "--limit", "100",
     "-o", "json", "--output-summary", "none", ...(after ? ["--after", after] : [])];
   let r;
   try { r = await exec("twg", args, { timeout: 60000 }); }
@@ -40,7 +43,7 @@ async function search() {
     after = data.pageInfo?.hasNextPage ? data.pageInfo.nextCursor : null;
     if (!after) break;
   }
-  return issues.map(i => ({
+  const list = issues.map(i => ({
     key: i.key,
     url: i.url,
     summary: i.summary ?? i.fields?.summary ?? "",
@@ -49,7 +52,64 @@ async function search() {
     type: i.issuetype?.name ?? "",
     project: { key: i.project?.key ?? "?", name: i.project?.name ?? "?" },
     updated: i.updated ? Date.parse(i.updated) : 0,
+    parent: i.parent?.key ?? null,
   }));
+  // Without its ancestors an issue still shows: their lookup failing leaves the chain short.
+  let known = new Map();
+  try { known = await ancestors(issues); } catch { /* keys only, as before */ }
+  for (const i of list) i.chain = chain(i, known);
+  return list;
+}
+
+// What a query result (`asked`: queried with the parent field) or a `parent` field (its own
+// parent not given) says of an issue: key → { key, url, summary, type, parent }, where parent
+// is null at the top and undefined while not looked up yet.
+function remember(known, i, base, asked) {
+  const f = i.fields ?? i;
+  const had = known.get(i.key);
+  known.set(i.key, {
+    key: i.key,
+    url: i.url ?? had?.url ?? (base ? `${base}/browse/${i.key}` : null),
+    summary: f.summary ?? had?.summary ?? "",
+    type: f.issuetype?.name ?? had?.type ?? "",
+    parent: asked ? i.parent?.key ?? null : had?.parent,
+  });
+}
+
+// The issues above `issues` (theirs, then their parents' …), one query per level.
+async function ancestors(issues) {
+  const known = new Map();
+  const base = issues.map(i => /^(https?:\/\/[^/]+)\/browse\//.exec(i.url ?? "")?.[1]).find(Boolean);
+  for (const i of issues) {
+    remember(known, i, base, true);
+    if (i.parent) remember(known, i.parent, base, false);
+  }
+  for (let level = 0; level < ANCESTOR_LEVELS; level++) {
+    const wanted = [...known.values()].filter(x => x.parent === undefined).map(x => x.key);
+    if (!wanted.length) break;
+    for (let k = 0; k < wanted.length; k += 100) {
+      const keys = wanted.slice(k, k + 100);
+      const data = await page(null, `key in (${keys.join(",")})`, "summary,issuetype,parent");
+      for (const i of data.data?.issues ?? []) {
+        remember(known, i, base, true);
+        if (i.parent) remember(known, i.parent, base, false);
+      }
+      // Not returned (deleted, not visible): nothing above them to look for.
+      for (const key of keys) if (known.get(key).parent === undefined) known.get(key).parent = null;
+    }
+  }
+  return known;
+}
+
+// The issue's ancestors, topmost first: [{ key, url, summary, type }].
+function chain(issue, known) {
+  const out = [], seen = new Set([issue.key]);
+  for (let key = issue.parent; key && !seen.has(key); key = known.get(key)?.parent) {
+    seen.add(key);
+    const a = known.get(key);
+    out.unshift({ key, url: a?.url ?? null, summary: a?.summary ?? "", type: a?.type ?? "" });
+  }
+  return out;
 }
 
 // Where an issue can go from its status (its workflow decides), via twg's read-only discovery.
@@ -494,6 +554,22 @@ export default class Jira extends View {
       .child(option("tr-cancel", null, "Annuler", null, () => { this.statusMenu = null; }));
   }
 
+  // The issue's key after its ancestors' (epic > parent > it), each a link to its issue.
+  // Ancestors give way first when the row is narrow; the issue's own key stays whole.
+  hierarchy(t, i) {
+    const link = (id, a, own) => div().id(id).flex_none().text_color(own ? t.muted : t.dim).cursor_pointer()
+      .hover(s => s.text_color(t.accent).underline())
+      .when(!own && !!a.summary, el => el.tooltip(a.type ? `${a.type} : ${a.summary}` : a.summary))
+      .on_click((_e, cx) => { cx.stop_propagation(); if (a.url) cx.open_url(a.url); })
+      .child(a.key);
+    const sep = () => div().flex_none().text_color(t.dim).opacity(0.6).child("›");
+    const above = i.chain ?? [];
+    return h_flex().min_w(0).gap(4).items_center()
+      .when(above.length > 0, el => el.child(h_flex().min_w(0).gap(4).items_center().overflow_hidden()
+        .children(above.flatMap((a, n) => [link(`up-${i.key}-${n}`, a, false), sep()]))))
+      .child(link(`key-${i.key}`, i, true));
+  }
+
   // The status is the sub-group's header, so the row shows type and key only.
   // On hover, the status button shows at the right of the first line, and the agent
   // buttons at the right of the second.
@@ -515,7 +591,7 @@ export default class Jira extends View {
           .when(active && this.moving !== i.key, el => el.child(this.statusButton(t, i))))
         .child(h_flex().h(18).gap(6).items_center().text_size(11)
           .when(!!i.type, el => el.child(this.typeTag(t, i.type)))
-          .child(div().text_color(t.dim).flex_none().child(i.key))
+          .child(this.hierarchy(t, i))
           .when(active || this.copied === i.key, el => el.child(this.copyButton(t, i)))
           .child(div().flex_1())
           .when(this.sending === i.key, el => el.child(
