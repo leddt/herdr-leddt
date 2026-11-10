@@ -16,6 +16,8 @@ export const BUSY_BACK = { Triaging: "New", Fixing: "Triaged", Verifying: "Fixed
 export const sessionsDir = () => `${appHome()}/data/leddt-review-sessions`;
 export const sessionDir = (id) => `${sessionsDir()}/${id}`;
 export const statePath = (id) => `${sessionDir(id)}/state.json`;
+// Done sessions move here, out of the Review button's sight.
+export const archiveDir = (id) => `${appHome()}/data/leddt-review-archive/${id}`;
 // Shared {sessionId: pane} of the Findings panes (pane mods aren't told their pane).
 export const PANES = "leddt-review.panes";
 

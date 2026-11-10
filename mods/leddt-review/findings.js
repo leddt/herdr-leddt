@@ -10,13 +10,16 @@
 // Props: { session }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, theme, run, exec, terminals, panes, focused, notify, shared, watchFolder, nextCommand } from "herdr";
+import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand } from "herdr";
 import {
-  BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath,
+  BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath, archiveDir,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
 } from "./session.js";
 
 const WHO = { reviewer: "Reviewer", origin: "Agent" };
+
+// Mod command names take only a-z and -: a session id's digits become -a..-j.
+const cmdId = (id) => id.replace(/[0-9]/g, (d) => "-" + "abcdefghij"[Number(d)]);
 
 async function hcJson(args, timeout) {
   const r = await exec("hc", [...args, "--json"], { timeout: timeout ?? 30000 });
@@ -54,7 +57,9 @@ export class Findings {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (!this.s || !this.keyTarget()) continue;
+        // From the Done confirmation: names its session, so no focus check.
+        if (this.s && c === `archive-${cmdId(this.id)}`) { await this.archiveSession(cx); continue; }
+        if (!this.s || this.closed || !this.keyTarget()) continue;
         if (c === "fix") this.fix(cx);
         else if (c === "verify") this.verify(cx);
         else if (c === "loop") this.loop(cx);
@@ -77,6 +82,8 @@ export class Findings {
   }
 
   save() {
+    // Archived: its folder has moved, and a late save would bring it back.
+    if (this.closed) return this.saving;
     const snapshot = JSON.parse(JSON.stringify(this.s));
     this.saving = this.saving.then(() => saveState(snapshot)).then(
       () => { this.saveFailed = false; },
@@ -132,6 +139,7 @@ export class Findings {
   // Start the oldest pending request of each agent that isn't busy with one:
   // a second message typed into an agent mid-turn would mix the two up.
   pump(cx) {
+    if (this.closed) return;
     const busy = new Set(this.running.values());
     for (const req of this.s.requests) {
       if (req.status !== "pending" || busy.has(req.agent)) continue;
@@ -247,7 +255,7 @@ export class Findings {
   // Apply any result file that's there. `final`: the agent's turn ended, so a
   // file that doesn't parse is an error (before that it may be half written).
   async checkFiles(cx, final) {
-    if (!this.s) return;
+    if (!this.s || this.closed) return;
     for (const req of [...this.s.requests]) {
       if (req.status !== "pending" || !req.file) continue;
       const r = await readJson(this.fileOf(req));
@@ -364,6 +372,52 @@ export class Findings {
     this.request(cx, "review", "reviewer", [], () => loopTask(this.s));
   }
 
+  // Verified findings leave the list; they stay in the session (and its count).
+  archiveVerified(cx) {
+    for (const f of this.s.findings) if (f.state === "Verified") f.archived = true;
+    this.save();
+    cx.notify();
+  }
+
+  // Asks first (the shipped confirm dialog), which sends archive-<id> back.
+  confirmDone() {
+    const s = this.s;
+    const busy = s.requests.some((r) => r.status === "pending");
+    openOverlay({ mod: "confirm", kind: "dialog", props: {
+      title: "Finish this review?",
+      detail: `Moves the session to the archive, ends the reviewer (${s.reviewer}) and closes this pane.` +
+        (busy ? " Requests still in progress are dropped; an agent that's working carries on." : ""),
+      command: { name: `leddt-review.archive-${cmdId(this.id)}` },
+    } });
+  }
+
+  // The whole session: state saved one last time, the reviewer ended, the
+  // folder moved to the archive, the pane closed.
+  async archiveSession(cx) {
+    if (this.closed) return;
+    this.s.archived = Date.now();
+    this.s.requests = this.s.requests.filter((r) => r.status !== "pending");
+    await this.save();
+    await this.saving;
+    this.closed = true;
+    if (this.alive(this.s.reviewer)) await exec("hc", ["kill", this.s.reviewer]).catch(() => null);
+    const to = archiveDir(this.id);
+    const mv = await exec("sh", ["-c", 'mkdir -p "$(dirname "$2")" && mv "$1" "$2"', "sh", sessionDir(this.id), to]).catch((e) => ({ code: 1, stderr: String(e) }));
+    if (mv.code !== 0) {
+      this.closed = false;
+      notify({ title: "Review: couldn't archive the session", body: (mv.stderr || mv.stdout || "").trim(), level: "error" });
+      cx.notify();
+      return;
+    }
+    const map = { ...(shared(PANES) ?? {}) };
+    const pane = map[this.id];
+    delete map[this.id];
+    setShared(PANES, map);
+    notify({ title: "Review archived", body: to, level: "success" });
+    if (pane && panes().some((x) => x.pane === pane)) run("pane.close", { pane });
+    cx.notify();
+  }
+
   // --- view ---------------------------------------------------------------------
 
   activity(req) {
@@ -387,6 +441,7 @@ export class Findings {
     const t = theme();
     if (this.missing) return div().size_full().p(16).bg(t.background).text_color(t.dim).child("This review session is gone.");
     if (!this.s) return div().size_full().bg(t.background);
+    if (this.closed) return div().size_full().p(16).bg(t.background).text_color(t.dim).child("This review is archived. You can close this pane.");
     const s = this.s;
     const alive = new Set(terminals().filter((x) => x.state === "live").map((x) => x.address));
     const reviewerBusy = Boolean(this.pending("reviewer")), originBusy = Boolean(this.pending("origin"));
@@ -394,6 +449,9 @@ export class Findings {
     const total = s.findings.length, doneCount = s.findings.filter((f) => f.state === "Verified").length;
     const open = s.findings.filter((f) => f.state !== "Verified");
     const allChecked = open.length > 0 && open.every((f) => f.checked);
+    const shown = s.findings.filter((f) => !f.archived);
+    const archived = total - shown.length;
+    const toArchive = shown.filter((f) => f.state === "Verified").length;
 
     const button = (id, label, enabled, primary, action, tip) => h_flex().id(id).h(26).px(10).items_center().rounded(7)
       .text_size(12).font_medium().flex_none()
@@ -423,10 +481,15 @@ export class Findings {
         .child(h_flex().gap(8).items_center()
           .child(svg("mods/leddt-review/git-compare.svg").size(14).text_color(t.dim))
           .child(div().font_semibold().text_size(13).child("Findings"))
-          .child(div().text_size(11).text_color(t.dim).child(total ? `${doneCount}/${total} done · round ${s.round}` : `round ${s.round}`))
+          .child(div().text_size(11).text_color(t.dim).child((total ? `${doneCount}/${total} done · ` : "") + (archived ? `${archived} archived · ` : "") + `round ${s.round}`))
           .child(div().flex_1())
           .child(link("lr-go-origin", "Agent", s.origin))
-          .child(link("lr-go-reviewer", "Reviewer", s.reviewer)))
+          .child(link("lr-go-reviewer", "Reviewer", s.reviewer))
+          .child(h_flex().id("lr-done").h(20).px(7).items_center().rounded(5).border_1().border_color(t.input).text_size(11)
+            .text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+            .tooltip("Finish: archive this review, end the reviewer, close this pane")
+            .on_click(() => this.confirmDone())
+            .child("Done")))
         .child(div().text_size(11.5).text_color(t.dim).truncate()
           .child(`${s.branch ?? "HEAD"} since ${s.base.name} · ${s.base.sha.slice(0, 8)} · ${s.base.ahead} commit${s.base.ahead === 1 ? "" : "s"}`)))
       // What's happening now, and what went wrong.
@@ -446,12 +509,14 @@ export class Findings {
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("lr-list").absolute().inset_0().overflow_y_scroll().p(8).gap(6)
           .when(!total && !work.length && !s.notice, (el) => el.child(div().p(8).text_color(t.dim).child("No findings yet.")))
-          .children(s.findings.map((f) => this.card(f, t)))))
+          .when(total > 0 && !shown.length, (el) => el.child(div().p(8).text_color(t.dim).child("Every finding is archived.")))
+          .children(shown.map((f) => this.card(f, t)))))
       // Actions.
       .child(h_flex().flex_none().px(10).py(8).gap(6).items_center().border_t(1).border_color(t.border)
         .child(h_flex().id("lr-all").gap(6).items_center().cursor_pointer().text_size(11.5).text_color(t.muted)
           .on_click((_e, cx) => { for (const f of open) f.checked = !allChecked; this.save(); cx.notify(); })
           .child(this.box(allChecked, t)).child("All"))
+        .when(toArchive > 0, (el) => el.child(button("lr-archive", `Archive verified (${toArchive})`, true, false, (cx) => this.archiveVerified(cx), "Hide the verified findings from the list")))
         .child(div().flex_1())
         .when(toTriage > 0, (el) => el.child(button("lr-triage", `Triage (${toTriage})`, !originBusy, false, (cx) => this.triageNew(cx), "Ask the agent to triage the checked new findings")))
         .child(button("lr-fix", toFix ? `Fix (${toFix})` : "Fix", toFix > 0 && !originBusy, true, (cx) => this.fix(cx), "Ask the agent to fix the checked triaged findings"))
