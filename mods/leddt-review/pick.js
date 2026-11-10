@@ -7,11 +7,10 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { props, closeOverlay, theme, run, panes, exec, notify, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
-import { baseCandidates, resolveBase, sessionDir, saveState, reviewTask } from "./session.js";
+import { baseCandidates, resolveBase, sessionDir, saveState, reviewTask, PANES } from "./session.js";
 
 const REMEMBER = "leddt-review.bases";
 // session id → its Findings pane (read by leddt-pane's Review button).
-const PANES = "leddt-review.panes";
 
 export class Picker {
   init(view, cx) {
@@ -124,9 +123,15 @@ async function startSession(cx, p, info, base) {
     "--parent", p.origin, "--no-notify", "--outlive-parent", "--label", `leddt-review=${id}`, "--",
     "claude", reviewTask(s), "--add-dir", dir, "--allowedTools", `Edit(/${dir}/**)`]);
   if (r.code !== 0) throw new Error(`Couldn't start the reviewer: ${(r.stderr || r.stdout).trim()}`);
-  s.reviewer = JSON.parse(r.stdout).address;
-  s.requests.push({ n: 0, kind: "review", agent: "reviewer", round: 1, launch: true, sent: true, status: "pending" });
-  await saveState(s);
+  try {
+    s.reviewer = JSON.parse(r.stdout).address;
+    s.requests.push({ n: 0, kind: "review", agent: "reviewer", round: 1, launch: true, sent: true, status: "pending" });
+    await saveState(s);
+  } catch (e) {
+    // No session to track it: don't leave the reviewer running on its own.
+    await exec("hc", ["kill", s.reviewer ?? `review-${id}`]).catch(() => {});
+    throw e;
+  }
 
   // The Findings pane right of the agent, the reviewer under it.
   const before = new Set(panes().map((x) => x.pane));

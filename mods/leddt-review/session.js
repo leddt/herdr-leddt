@@ -16,6 +16,8 @@ export const BUSY_BACK = { Triaging: "New", Fixing: "Triaged", Verifying: "Fixed
 export const sessionsDir = () => `${appHome()}/data/leddt-review-sessions`;
 export const sessionDir = (id) => `${sessionsDir()}/${id}`;
 export const statePath = (id) => `${sessionDir(id)}/state.json`;
+// Shared {sessionId: pane} of the Findings panes (pane mods aren't told their pane).
+export const PANES = "leddt-review.panes";
 
 export async function loadState(id) {
   try { return JSON.parse(await fs.readFile(statePath(id), "utf8")); } catch { return null; }
@@ -81,7 +83,8 @@ export async function baseCandidates(cwd) {
 
 // A ref someone typed: its merge-base with HEAD.
 export async function resolveBase(cwd, ref) {
-  const mb = await exec("git", ["merge-base", "HEAD", ref], { cwd });
+  // --end-of-options: a typed "-h" or "--all" is a (bad) ref, not a flag.
+  const mb = await exec("git", ["merge-base", "--end-of-options", "HEAD", ref], { cwd });
   if (mb.code !== 0) throw new Error((mb.stderr || `Unknown ref: ${ref}`).trim());
   const mergeBase = mb.stdout.trim();
   const n = await exec("git", ["rev-list", "--count", `${mergeBase}..HEAD`], { cwd });

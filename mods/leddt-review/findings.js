@@ -10,9 +10,9 @@
 // Props: { session }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, theme, run, exec, terminals, panes, focused, notify, watchFolder, nextCommand } from "herdr";
+import { props, theme, run, exec, terminals, panes, focused, notify, shared, watchFolder, nextCommand } from "herdr";
 import {
-  BUSY_BACK, loadState, saveState, readJson, sessionDir, statePath,
+  BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
 } from "./session.js";
 
@@ -50,11 +50,11 @@ export class Findings {
       this.watch(cx);
     });
     // Key commands (keys.json "…": "leddt-review:fix") reach every shown
-    // Findings pane; only the one for the focused tab's session acts.
+    // Findings pane; only one session acts (see keyTarget).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (!this.s || !this.inFocusedTab()) continue;
+        if (!this.s || !this.keyTarget()) continue;
         if (c === "fix") this.fix(cx);
         else if (c === "verify") this.verify(cx);
         else if (c === "loop") this.loop(cx);
@@ -91,10 +91,19 @@ export class Findings {
 
   alive(addr) { return Boolean(addr) && terminals().some((x) => x.address === addr && x.state === "live"); }
 
-  // This session's agent or reviewer is in the focused tab.
-  inFocusedTab() {
-    const tab = focused()?.tab;
-    return Boolean(tab) && panes().some((p) => p.tab === tab && p.terminal && (p.terminal === this.s.origin || p.terminal === this.s.reviewer));
+  // Whether a key command is for this session: the focused Findings pane's,
+  // else the newest one with a Findings pane in the focused tab, else (pane
+  // not remembered) one whose agent or reviewer is in that tab.
+  keyTarget() {
+    const f = focused();
+    if (!f?.tab) return false;
+    const map = Object.entries(shared(PANES) ?? {});
+    const own = map.find(([, pane]) => pane === f.pane);
+    if (own) return own[0] === this.id;
+    const inTab = new Set(panes().filter((p) => p.tab === f.tab && p.mod === "leddt-review").map((p) => p.pane));
+    const here = map.filter(([, pane]) => inTab.has(pane)).map(([id]) => id);
+    if (here.length) return here.sort((a, b) => parseInt(b, 36) - parseInt(a, 36))[0] === this.id;
+    return panes().some((p) => p.tab === f.tab && p.terminal && (p.terminal === this.s.origin || p.terminal === this.s.reviewer));
   }
 
   find(id) { return this.s.findings.find((f) => f.id === id); }
@@ -103,11 +112,13 @@ export class Findings {
 
   // --- requests -----------------------------------------------------------------
 
-  request(cx, kind, agent, ids, build) {
+  // `round`: a report is for its review's round, which a Retry after Loop
+  // makes older than the session's.
+  request(cx, kind, agent, ids, build, round = this.s.round) {
     const n = ++this.s.seq;
     // A review round writes no file: its report request (sent when it ends) does.
-    const file = kind === "review" ? null : kind === "report" ? `findings-r${this.s.round}.json` : `${kind}-${n}.json`;
-    const req = { n, kind, agent, ids, file, round: this.s.round, sent: false, status: "pending" };
+    const file = kind === "review" ? null : kind === "report" ? `findings-r${round}.json` : `${kind}-${n}.json`;
+    const req = { n, kind, agent, ids, file, round, sent: false, status: "pending" };
     req.text = build(`${sessionDir(this.id)}/${file}`);
     this.s.requests.push(req);
     const busy = { triage: "Triaging", fix: "Fixing", verify: "Verifying" }[kind];
@@ -132,10 +143,24 @@ export class Findings {
   // Send the request (once), then follow the agent until its turn ends.
   drive(req, cx) {
     this.running.set(req.n, req.agent);
+    req.waiting = false;
     cx.spawn(async (cx) => {
       try {
         const addr = this.s[req.agent];
         if (!req.sent) {
+          // The agent may be mid-turn with something else: another session's
+          // request, or the person's own prompt. Let it finish first.
+          for (;;) {
+            const st = statusOf(await hcJson(["get", addr]));
+            if (st === null) return this.fail(req, `${WHO[req.agent]} (${addr}) is gone.`, cx);
+            req.waiting = st === "working" || st === "blocked";
+            cx.notify();
+            if (st === "working") await hcJson(["wait", addr, "--timeout", "540"], 600000);
+            else if (st === "blocked") await cx.sleep(2000);
+            else break;
+            if (req.status !== "pending") return;
+          }
+          req.waiting = false;
           // Marked sent first: a reload while `send --wait` runs must not send it twice.
           req.sent = true;
           await this.save();
@@ -146,7 +171,9 @@ export class Findings {
           // prompt, and idle ends `hc wait`: first see it start (up to a minute).
           for (let i = 0; i < 60; i++) {
             const st = statusOf(await hcJson(["get", addr]));
-            if (st === "working" || st === "blocked" || st === null) break;
+            if (st === null) break;
+            // Started: after a reload or Retry, idle means it's done.
+            if (st === "working" || st === "blocked") { req.launch = false; this.save(); break; }
             await cx.sleep(1000);
           }
           await hcJson(["wait", addr, "--timeout", "540"], 600000);
@@ -168,7 +195,7 @@ export class Findings {
         if (req.status !== "pending") return;
         if (req.kind === "review") {
           this.done(req);
-          this.request(cx, "report", "reviewer", [], (path) => reportTask(this.s, req.round, path));
+          this.request(cx, "report", "reviewer", [], (path) => reportTask(this.s, req.round, path), req.round);
         } else {
           this.fail(req, `${WHO[req.agent]} finished without writing ${req.file}.`, cx);
         }
@@ -194,6 +221,7 @@ export class Findings {
     req.status = "error";
     req.error = message;
     req.blocked = false;
+    req.waiting = false;
     this.save();
     cx.notify();
   }
@@ -270,7 +298,8 @@ export class Findings {
       for (const x of list("fixed")) {
         const f = this.find(String(x.id));
         if (!f || !req.ids.includes(f.id)) continue;
-        const ok = x.fixed !== false;
+        // Only an explicit true: a missing or odd value shows as not fixed, with its note.
+        const ok = x.fixed === true;
         f.fix = { ok, note: x.note ?? "" };
         f.state = ok ? "Fixed" : "Triaged";
         seen.add(f.id);
@@ -340,6 +369,7 @@ export class Findings {
   activity(req) {
     const n = req.ids?.length ?? 0, s = n === 1 ? "" : "s";
     if (req.blocked) return `${WHO[req.agent]} needs you (${this.s[req.agent]})`;
+    if (req.waiting) return `Waiting for ${WHO[req.agent]} (${this.s[req.agent]}) to finish its current turn…`;
     if (!this.running.has(req.n)) return `Next for ${WHO[req.agent]}, when it's done: ` + {
       review: `review round ${req.round}`, report: "write up its findings", triage: `triage ${n} finding${s}`,
       fix: `fix ${n} finding${s}`, verify: `verify ${n} fix${n === 1 ? "" : "es"}`,

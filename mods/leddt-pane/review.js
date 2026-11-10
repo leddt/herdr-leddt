@@ -31,12 +31,11 @@ export async function review(cx, p, fresh) {
       props: { mode: "pick", origin: p.terminal, pane: p.pane, cwd: p.cwd } });
     return;
   }
+  // Its Findings pane, if it's still open; a pane not remembered for it may be
+  // another session's, so it's opened again instead.
   const known = (shared(PANES) ?? {})[s.id];
-  // Sessions from before panes were remembered: the review pane in this tab, if there is one.
-  const open = panes().find((x) => x.pane === known) ??
-    (known ? null : panes().find((x) => x.mod === "leddt-review" && x.tab === p.tab));
+  const open = known ? panes().find((x) => x.pane === known && x.mod === "leddt-review") : null;
   if (open) {
-    if (open.pane !== known) setShared(PANES, { ...(shared(PANES) ?? {}), [s.id]: open.pane });
     run("pane.focus", { pane: open.pane });
     return;
   }
