@@ -52,11 +52,11 @@
         {
           "id": "leddt-usage",
           "type": "block",
-          "size": {
-            "px": 64
-          },
           "content": {
             "mod": "leddt-usage"
+          },
+          "size": {
+            "px": 64
           }
         },
         {

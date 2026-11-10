@@ -8,6 +8,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared, window } from "herdr";
 import { readContext, contextColor, fmtTokens } from "./context.js";
+import { review } from "./review.js";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -162,7 +163,7 @@ export default class Pane extends View {
     const t = theme();
     const p = this.me();
     if (!p) return div();
-    const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const name = p.mod === "leddt-review" ? "Review" : ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
@@ -187,6 +188,27 @@ export default class Pane extends View {
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
+      // Review: pick a base branch, then a fresh reviewer runs /code-review and a Findings pane opens (leddt-review).
+      .when(this.hovered && isClaude && Boolean(p.cwd), el => el.child(
+        h_flex()
+          .id(`ph-review-${pane}`)
+          .flex_none()
+          .h(20)
+          .px(6)
+          .gap(4)
+          .items_center()
+          .rounded(4)
+          .text_size(11.5)
+          .text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Review this branch (reopens its last review; Shift+click: a new one)")
+          .on_click((e, cx) => {
+            cx.stop_propagation();
+            const fresh = !!e.modifiers?.shift;
+            cx.spawn(async (cx) => review(cx, p, fresh));
+          })
+          .child(svg("mods/leddt-review/git-compare.svg").size(13))
+          .child("Review")))
       // Done: archive this Claude session (resumable with /resume) and start a fresh one in place.
       .when(this.hovered && claude, el => el.child(
         div()
