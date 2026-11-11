@@ -82,7 +82,7 @@ The icon paths in the four clones that have their own icons point at their own f
 
 ### `leddt-usage`
 
-One line at the left of the status bar with two small meters showing Claude plan usage: **5h** (session) and **Week**, each with its % and the time until it resets. It reads the OAuth token from `~/.claude/.credentials.json`, calls `api.anthropic.com/api/oauth/usage`, and refreshes every 2 minutes (click it to refresh now). An error replaces the meters.
+One line at the left of the status bar with two small meters showing Claude plan usage: **5h** (session) and **Week**, each with its % and the time until it resets. It reads the OAuth token from `~/.claude/.credentials.json`, calls `api.anthropic.com/api/oauth/usage`, and refreshes every 5 minutes (click it to refresh now, at most once every 30 seconds). An error replaces the meters, except a 429 (rate limit): the last values stay, and it waits for `Retry-After` or a doubling backoff (5 minutes up to 1 hour) before asking again.
 
 ### `leddt-context`
 

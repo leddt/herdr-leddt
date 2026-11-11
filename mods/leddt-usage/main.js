@@ -3,6 +3,9 @@ import { h_flex } from "gpui-base";
 import { theme, home, readTextFile } from "herdr";
 
 const URL = "https://api.anthropic.com/api/oauth/usage";
+const POLL_MS = 5 * 60000;
+const CLICK_MS = 30000;
+const MAX_BACKOFF_MS = 60 * 60000;
 
 function untilText(iso) {
   if (!iso) return "";
@@ -26,11 +29,25 @@ export default class ClaudeUsage extends View {
   init(_props, cx) {
     this.data = null;
     this.error = null;
+    this.busy = false;
+    this.lastAt = 0;        // when the last request was sent
+    this.nextAt = 0;        // when the next scheduled poll is due
+    this.blockedUntil = 0;  // after a 429: no request before this, not even on click
+    this.backoff = 0;
     this.refresh(cx);
-    cx.timer.every(120000, (cx) => this.refresh(cx));
+    cx.timer.every(30000, (cx) => this.refresh(cx));
   }
 
-  refresh(cx) {
+  // The endpoint is rate-limited and Claude Code uses it with the same token, so: one request at
+  // a time, a poll every POLL_MS, clicks at most every CLICK_MS, and after a 429 nothing until
+  // Retry-After (or a doubling backoff) has passed. A 429 keeps the last values on screen.
+  refresh(cx, manual = false) {
+    const now = Date.now();
+    if (this.busy || now < this.blockedUntil) return;
+    if (manual ? now - this.lastAt < CLICK_MS : now < this.nextAt) return;
+    this.busy = true;
+    this.lastAt = now;
+    this.nextAt = now + POLL_MS;
     cx.spawn(async (cx) => {
       try {
         const raw = await readTextFile(`${home()}/.claude/.credentials.json`);
@@ -39,13 +56,22 @@ export default class ClaudeUsage extends View {
         const r = await fetch(URL, {
           headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
         });
-        if (r.status === 401) throw new Error("token expired: run claude");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        this.data = await r.json();
-        this.error = null;
+        if (r.status === 429) {
+          const after = Number(r.headers?.get?.("retry-after")) * 1000;
+          this.backoff = Math.min(this.backoff ? this.backoff * 2 : POLL_MS, MAX_BACKOFF_MS);
+          this.blockedUntil = Date.now() + Math.max(after > 0 ? after : 0, this.backoff);
+          this.error = this.data ? null : "rate limited, will retry";
+        } else {
+          if (r.status === 401) throw new Error("token expired: run claude");
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          this.data = await r.json();
+          this.error = null;
+          this.backoff = 0;
+        }
       } catch (e) {
         this.error = String(e?.message ?? e);
       }
+      this.busy = false;
       cx.notify();
     });
   }
@@ -66,7 +92,7 @@ export default class ClaudeUsage extends View {
     const t = theme();
     return h_flex().id("root").size_full().bg(t.chrome).border_t(1).border_color(t.border)
       .px(14).gap(14).items_center().overflow_hidden().text_size(11.8).cursor_pointer()
-      .on_click((_e, cx) => this.refresh(cx))
+      .on_click((_e, cx) => this.refresh(cx, true))
       .when(!!this.error, (el) => el.child(div().text_color(t.blocked).truncate().child(this.error)))
       .when(!this.error, (el) => el
         .child(this.meter("five", "5h", this.data?.five_hour))
