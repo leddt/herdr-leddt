@@ -17,6 +17,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Pane header | `pane` | `leddt-pane` |
 | Right panel, Files (`files`) | `files` | `leddt-files` |
 | Right panel, Changes (`changes`) | `changes` | `leddt-changes` |
+| Right panel, Branches (`branches`) | — | **new** `leddt-branches` block in the `panel-body` stack |
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
 | Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 32px) |
 | Status bar | `status` block | `status-row`: a **new** `leddt-usage` block (370px) at the left, then `workspace-status` |
@@ -90,6 +91,24 @@ The popover that opens from the context chip in `leddt-pane`. It has two modes, 
 
 - **Simple:** the latest usage from the transcript: total, window, and what the last step added.
 - **Detailed:** runs Claude Code's own `/context` on a forked, unsaved copy of the session (no API call, about 1s) and shows the breakdown by category.
+
+### `leddt-branches`
+
+A right-panel block that lists the git branches of the focused pane's repo and acts on them. Open it with the **Branches** button in the tab bar.
+
+- **Groups:** **Local**, then one per remote, most recent commit first. Groups fold on click; remotes start folded. The folds are kept in the mod's `localStorage`.
+- **Counts:** each branch shows `↑n` (commits it has that the checked-out branch lacks) and `↓n` (commits it lacks), or `=` when there are none. The checked-out branch shows its distance from its upstream instead: what Push and Pull would move. With a detached HEAD the counts compare with that commit. They all come from one `git for-each-ref` with `%(ahead-behind:HEAD)`, so git 2.41 or later; an older git lists the branches without counts.
+- **Actions:** hovering a branch replaces its date and counts with icon buttons, each with a tooltip; double-click to check it out. A click selects the branch as the start of a new one.
+  - **Checkout:** `git switch`. A remote branch switches to its local branch, or creates one that tracks it.
+  - **Merge** into the checked-out branch (`git merge --no-edit`) and **Rebase** the checked-out branch onto it. Both ask first. A conflict is left in progress, to finish or abort in a terminal.
+  - **Rename** (local branches): a box under the row, Enter to rename, Esc to cancel.
+  - **Delete:** asks first, except for a local branch whose upstream is gone and that has no commit the checked-out branch lacks. A local branch goes with `git branch -d`; if it isn't fully merged, a second dialog asks before `git branch -D`. A remote branch goes with `git push <remote> --delete`.
+  - A branch checked out in another worktree has a `worktree` tag (its tooltip says where) and can't be checked out or deleted.
+- **Details:** a selected branch shows a panel above the new-branch box: what it tracks (with what there is to push and pull), how it compares with the checked-out branch, the worktree that holds it, its last commit (hash, subject, author, date), and the first 5 commits the checked-out branch lacks. For the checked-out branch, those are the commits not pushed to its upstream. Click the branch again or the ✕ to close it.
+- **Header:** **Fetch** (`git fetch --all --prune`), **Pull** and **Push** for the checked-out branch. Push sets the upstream (`-u origin <branch>`) when there is none. Network commands get 2 minutes.
+- **New branch:** the box at the bottom creates a branch and switches to it. It starts from the selected branch, else from HEAD, and gets no upstream.
+- **Errors:** git's own message shows in red above the box.
+- **Refresh:** when the focused folder changes, every 10 seconds, after each action, and when the repo's git folder changes (local repos only).
 
 ### `leddt-jira`
 
