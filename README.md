@@ -46,6 +46,8 @@ A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one i
 
 ### `leddt-pane` (from `pane`)
 
+- **CPU and memory** at the right of the header (before the context chip), for every terminal on this machine: the CPU % and memory of the terminal's process and all its descendants (the shell, the program it runs, that program's children). The CPU is a share of one core, averaged since the last reading, so it can go above 100%, and it's brighter from 50%; the tooltip adds the share of the whole machine and the number of processes. `stats.js` (new) reads the process table once every 5s for all headers (`Get-CimInstance Win32_Process` on Windows, about 0.4s of one core each time; `ps` elsewhere), and only while a pane's tab is on screen. The CPU shows from the second reading.
+
 These only show for panes running Claude Code:
 
 - **Context chip** at the right edge of the header: a small bar with the context % (it changes colour at 65% and again at 85%). It refreshes every 5s and is shared as `leddt-context:<terminal>`. Click it to open the `leddt-context` popover. It only appears on local machines.

@@ -9,6 +9,7 @@ import { h_flex } from "gpui-base";
 import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared, window } from "herdr";
 import { readContext, contextColor, fmtTokens } from "./context.js";
 import { review } from "./review.js";
+import { terminalStats, fmtBytes, INTERVAL } from "./stats.js";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -93,6 +94,48 @@ export default class Pane extends View {
     this.hovered = false;
     this.refreshContext(cx);
     cx.timer.every(5000, (cx) => this.refreshContext(cx));
+    this.refreshStats(cx);
+    cx.timer.every(INTERVAL, (cx) => this.refreshStats(cx));
+  }
+
+  // CPU and memory of this pane's terminal (stats.js). Only while its tab is
+  // the one on screen, and on this machine: timers also run in hidden tabs.
+  refreshStats(cx) {
+    const p = this.me();
+    const space = spaces().find((s) => s.tabs?.some((tb) => tb.id === p?.tab));
+    const shown = space?.active && space.tabs.find((tb) => tb.id === p.tab)?.active;
+    if (!p?.terminal || !shown || space.machine || this.sampling) return;
+    this.sampling = true;
+    cx.spawn(async (cx) => {
+      try {
+        this.stats = await terminalStats(p.terminal);
+        this.statsAt = Date.now();
+      } catch { this.stats = null; }
+      this.sampling = false;
+      cx.notify();
+    });
+  }
+
+  statsChip(t, terminal) {
+    const s = this.stats;
+    // Not the numbers from before its tab was hidden.
+    if (!s || Date.now() - this.statsAt > INTERVAL * 3) return null;
+    const cpu = s.cpu === null ? null : Math.round(s.cpu);
+    const tip = [
+      cpu === null ? null : `CPU: ${cpu}% of one core` + (s.cores ? ` (${Math.round(s.cpu / s.cores)}% of ${s.cores})` : ""),
+      `Memory: ${fmtBytes(s.rss)}`,
+      s.count === 1 ? "1 process" : `${s.count} processes`,
+    ].filter(Boolean).join(" · ");
+    return h_flex()
+      .id(`ph-stats-${terminal}`)
+      .flex_none()
+      .gap(6)
+      .items_center()
+      .text_size(11)
+      .text_color(t.dim)
+      .tooltip(tip)
+      .when(cpu !== null, (el) => el.child(div().text_color(cpu >= 50 ? t.foreground : t.dim).child(`${cpu}%`)))
+      .child(div().child(fmtBytes(s.rss)));
   }
 
   // Context usage of the Claude session in this pane, shared as
@@ -257,7 +300,8 @@ export default class Pane extends View {
         .child(split("down"))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
         .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })))
-      // Last, at the right edge: the hover buttons appear to its left, so it never moves.
+      // Last, at the right edge: the hover buttons appear to their left, so they never move.
+      .when(Boolean(p.terminal && !machine), (el) => { const chip = this.statsChip(t, p.terminal); return chip ? el.child(chip) : el; })
       .when(Boolean(isClaude), (el) => { const chip = this.contextChip(t, p.terminal); return chip ? el.child(chip) : el; });
   }
 }
