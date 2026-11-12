@@ -414,10 +414,10 @@ export default class Agents extends View {
           .child(div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(agentName)))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
-        .when(this.hovered === a.address && isClaude(a), el => el.child(done))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
-        .child(this.status(t, a, byPriority && !isPinned));
+        // Hovered, a Claude row's status gives its place to the Done check, unless it's busy.
+        .child(this.hovered === a.address && isClaude(a) && a.status !== "working" ? done : this.status(t, a, byPriority && !isPinned));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
