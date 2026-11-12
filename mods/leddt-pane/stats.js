@@ -1,12 +1,16 @@
 // CPU and memory of what runs in a terminal: its root process (hc's `pid`) and
 // every descendant, since the program is usually a child of the shell.
 // One process table for every pane header (module code is shared by copies),
-// read at most once per INTERVAL by whichever copy asks first. CPU is the tree's CPU time between two
-// reads, so it needs two of them.
+// read at most once per INTERVAL by whichever copy asks first (FAST for a copy
+// that just came on screen). CPU is the tree's CPU time between two reads, so
+// it needs two of them.
 
 import { exec, hc, window } from "herdr";
 
 export const INTERVAL = 5000;
+// For FAST_FOR after a pane comes on screen, so its numbers show up quickly.
+export const FAST = 1000;
+export const FAST_FOR = 5000;
 
 // One line per process: pid, parent pid, resident bytes, CPU seconds so far.
 // Windows: a "cores N" line first. A PowerShell start costs ~0.4s of one core.
@@ -60,12 +64,12 @@ let cur = null;
 let readingSince = 0;
 const GIVE_UP = 20000;
 
-// The latest table, null before the first read ends.
-async function table() {
+// The latest table, at most `every` ms old; null before the first read ends.
+async function table(every) {
   const now = Date.now();
   // Fresh by when it was asked for, not when it came back (a read takes up to
   // a second): else every other tick would find the last one still fresh.
-  if ((cur && now - cur.asked < INTERVAL - 500) || now - readingSince < GIVE_UP) return cur;
+  if ((cur && now - cur.asked < every - 500) || now - readingSince < GIVE_UP) return cur;
   const mine = readingSince = now;
   try {
     const t = await readTable();
@@ -98,9 +102,10 @@ function tree(t, pid) {
 
 // { cpu, rss, count, cores }: cpu in % of one core (null until the second
 // read), rss in bytes, count processes. null when the terminal's process
-// can't be found, or before the first read ends.
-export async function terminalStats(terminal) {
-  const t = await table();
+// can't be found, or before the first read ends. `every`: how old the
+// process table may be, in ms.
+export async function terminalStats(terminal, every = INTERVAL) {
+  const t = await table(every);
   if (!t) return null;
   // The read before t: taken now, since another read can land during the await below.
   const before = prev;

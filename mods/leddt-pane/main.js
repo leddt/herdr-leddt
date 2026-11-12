@@ -9,7 +9,7 @@ import { h_flex } from "gpui-base";
 import { panes, spaces, props, run, theme, home, hc, exec, readTextFile, notify, openOverlay, shared, setShared, window } from "herdr";
 import { readContext, contextColor, fmtTokens } from "./context.js";
 import { review } from "./review.js";
-import { terminalStats, fmtBytes, INTERVAL } from "./stats.js";
+import { terminalStats, fmtBytes, INTERVAL, FAST, FAST_FOR } from "./stats.js";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -94,8 +94,12 @@ export default class Pane extends View {
     this.hovered = false;
     this.refreshContext(cx);
     cx.timer.every(5000, (cx) => this.refreshContext(cx));
+    this.shownSince = 0;
+    this.sampledAt = 0;
     this.refreshStats(cx);
-    cx.timer.every(INTERVAL, (cx) => this.refreshStats(cx));
+    // Ticks every FAST: samples that often for FAST_FOR after coming on
+    // screen (numbers show up sooner), then every INTERVAL.
+    cx.timer.every(FAST, (cx) => this.refreshStats(cx));
   }
 
   // CPU and memory of this pane's terminal (stats.js). Only while its tab is
@@ -104,13 +108,17 @@ export default class Pane extends View {
     const p = this.me();
     const space = spaces().find((s) => s.tabs?.some((tb) => tb.id === p?.tab));
     const shown = space?.active && space.tabs.find((tb) => tb.id === p.tab)?.active;
+    const now = Date.now();
+    if (!p?.terminal || !shown || space.machine) { this.shownSince = 0; return; }
+    if (!this.shownSince) this.shownSince = now;
+    const every = now - this.shownSince < FAST_FOR ? FAST : INTERVAL;
     // A sample that never ended doesn't hold the next ones back forever.
-    const busy = this.sampling && Date.now() - this.sampling < 30000;
-    if (!p?.terminal || !shown || space.machine || busy) return;
-    const mine = this.sampling = Date.now();
+    const busy = this.sampling && now - this.sampling < 30000;
+    if (busy || now - this.sampledAt < every - 500) return;
+    const mine = this.sampling = this.sampledAt = now;
     cx.spawn(async (cx) => {
       try {
-        this.stats = await terminalStats(p.terminal);
+        this.stats = await terminalStats(p.terminal, every);
         this.statsAt = Date.now();
       } catch { this.stats = null; }
       if (this.sampling === mine) this.sampling = 0;
