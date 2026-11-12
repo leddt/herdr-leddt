@@ -119,10 +119,17 @@ const brief = (f) => ({
   ...(f.parent ? { follow_up_of: f.parent } : {}),
 });
 
+// What follow_up_of means, for a prompt whose findings carry it.
+const followUpNote = (findings) => findings.some((f) => f.parent) ? [
+  'A finding with "follow_up_of" is a new point the reviewer raised while verifying the fix of that finding. ' +
+  "It is separate from its parent: not a duplicate of it, and not settled by the parent's fix.",
+] : [];
+
 export function triageTask(s, findings, file) {
   return [
     `A separate code reviewer (terminal ${s.reviewer}) reviewed this branch's changes since ${s.base.name} (\`git diff ${short(s.base.sha)}\`). ` +
     "Triage each finding below against the actual code. Don't change any code in this step.",
+    ...followUpNote(findings),
     "",
     "Write your triage to this file as JSON, with your Write tool, one entry per finding id:",
     file,
@@ -146,6 +153,7 @@ export function fixTask(s, findings, file) {
       'your triage and over a code fix (e.g. "Create a Jira issue" means create the issue, not change the code). ' +
       'Report "fixed": true once you\'ve done what it asks, and say what you did in "note". Handle the others as usual.',
     ] : []),
+    ...followUpNote(findings),
     "",
     "When you're done, write the outcome to this file as JSON, with your Write tool, one entry per id:",
     file,
@@ -166,6 +174,7 @@ export function verifyTask(s, findings, file) {
       'A finding with an "instruction" was handled the way the person asked instead of (or as well as) a code fix: ' +
       'verify that the instruction was followed, from the fix note and the code, not that the code changed.',
     ] : []),
+    ...followUpNote(findings),
     "",
     "Write the result to this file as JSON, with your Write tool, one entry per id:",
     file,
@@ -175,10 +184,15 @@ export function verifyTask(s, findings, file) {
     "If checking a fix turns up new problems that are not the original finding (the fix holds but raises another point, or brings in a new issue), " +
     'add them to that entry as "follow_ups": [{"title":"one line","file":"path/from/repo/root","line":42,"severity":"low|medium|high","description":"what\'s wrong and why","failure":"concrete scenario that breaks"}]. ' +
     "Don't give them ids (they're numbered after their finding: R1-2.1, R1-2.2, ...), and leave follow_ups out when there are none. " +
-    "What's still wrong with the original finding goes in the note, not in follow_ups.",
+    "What's still wrong with the original finding goes in the note, not in follow_ups. " +
+    'A finding with "existing_follow_ups" already has those: don\'t report them again, only points that are new.',
     "",
     "Findings:",
-    JSON.stringify(findings.map((f) => ({ ...brief(f), fix_note: f.fix?.note ?? null, ...withInstruction(f.fix?.instruction) }))),
+    JSON.stringify(findings.map((f) => {
+      // Its follow-ups so far, so a second verify doesn't raise them again under new numbers.
+      const existing = s.findings.filter((c) => c.parent === f.id).map((c) => ({ id: c.id, title: c.title }));
+      return { ...brief(f), fix_note: f.fix?.note ?? null, ...withInstruction(f.fix?.instruction), ...(existing.length ? { existing_follow_ups: existing } : {}) };
+    })),
   ].join("\n");
 }
 

@@ -282,19 +282,30 @@ export class Findings {
       const r = await readJson(this.fileOf(req));
       if (r.missing || req.status !== "pending") continue;
       if (r.error) { if (final) this.fail(req, r.error, cx); continue; }
-      try { this.apply(req, r.data, cx); }
+      let added;
+      try { added = this.apply(req, r.data, cx); }
       catch (e) { if (final) this.fail(req, `${req.file}: ${e?.message ?? e}`, cx); continue; }
       this.done(req);
       // The new findings' lines as the reviewer saw them, for the diff view.
-      if (req.kind === "report" || req.kind === "verify") {
-        const fresh = req.kind === "report" ? (f) => f.round === req.round : (f) => f.parent && f.anchor === undefined;
-        await captureAnchors(this.s, this.s.findings.filter(fresh)).catch(() => null);
+      if (added?.length) {
+        await captureAnchors(this.s, added.map((id) => this.find(id)).filter(Boolean)).catch(() => null);
         this.save();
       }
     }
   }
 
+  // A finding from the reviewer's output: a report's, or a verify's follow-up.
+  newFinding(id, raw, extra) {
+    return {
+      id, title: raw.title ?? "(untitled)", file: raw.file ?? null, line: raw.line ?? null,
+      severity: raw.severity ?? null, description: raw.description ?? "", failure: raw.failure ?? null,
+      repeats: raw.repeats ?? null, state: "New", checked: true, ...extra,
+    };
+  }
+
+  // Applies a result file; returns the ids of the findings it added.
   apply(req, data, cx) {
+    let fresh = [];
     const list = (key) => {
       const v = data?.[key];
       if (!Array.isArray(v)) throw new Error(`expected {"${key}": [...]}`);
@@ -304,15 +315,11 @@ export class Findings {
       return v;
     };
     if (req.kind === "report") {
-      const fresh = [], added = [];
+      const added = [];
       for (const raw of list("findings")) {
         let id = String(raw.id ?? `R${req.round}-${fresh.length + 1}`);
         while (this.find(id) || fresh.includes(id)) id += "'";
-        added.push({
-          id, round: req.round, title: raw.title ?? "(untitled)", file: raw.file ?? null, line: raw.line ?? null,
-          severity: raw.severity ?? null, description: raw.description ?? "", failure: raw.failure ?? null,
-          repeats: raw.repeats ?? null, state: "New", checked: true,
-        });
+        added.push(this.newFinding(id, raw, { round: req.round }));
         fresh.push(id);
       }
       this.s.findings.push(...added);
@@ -345,35 +352,40 @@ export class Findings {
       this.leftover(req, seen, "Triaged", "Not reported as fixed");
     } else if (req.kind === "verify") {
       const entries = list("verify");
-      if (entries.some((x) => x.follow_ups != null && (!Array.isArray(x.follow_ups) || x.follow_ups.some((y) => !y || typeof y !== "object" || Array.isArray(y)))))
+      // Only the entries this request asked for: a stray one is skipped, it can't fail the file.
+      const ours = entries.filter((x) => req.ids.includes(String(x.id)) && this.find(String(x.id)));
+      if (ours.some((x) => x.follow_ups != null && (!Array.isArray(x.follow_ups) || x.follow_ups.some((y) => !y || typeof y !== "object" || Array.isArray(y)))))
         throw new Error('"follow_ups" must be a list of objects');
-      const seen = new Set(), fresh = [];
-      for (const x of entries) {
+      // Follow-ups under an id this verify didn't ask about: dropped, and the person is told.
+      const stray = entries.filter((x) => !ours.includes(x) && Array.isArray(x.follow_ups) && x.follow_ups.length).map((x) => String(x.id));
+      const seen = new Set();
+      for (const x of ours) {
         const f = this.find(String(x.id));
-        if (!f || !req.ids.includes(f.id) || seen.has(f.id)) continue;
-        const ok = x.verified === true;
-        f.verify = { ok, note: x.note ?? "" };
-        // Not fixed after all: back to Triaged, to fix again.
-        f.state = ok ? "Verified" : "Triaged";
-        if (ok) f.checked = false;
-        seen.add(f.id);
+        // The first entry for an id gives the verdict; a repeated one can still add follow-ups.
+        if (!seen.has(f.id)) {
+          const ok = x.verified === true;
+          f.verify = { ok, note: x.note ?? "" };
+          // Not fixed after all: back to Triaged, to fix again.
+          f.state = ok ? "Verified" : "Triaged";
+          if (ok) f.checked = false;
+          seen.add(f.id);
+        }
         // New points the fix raised: findings of their own, numbered under it (R1-2.1, R1-2.1.1…).
         let k = this.s.findings.filter((c) => c.parent === f.id).length;
         for (const raw of x.follow_ups ?? []) {
           let id;
           do id = `${f.id}.${++k}`; while (this.find(id));
-          this.s.findings.push({
-            id, parent: f.id, round: f.round, title: raw.title ?? "(untitled)", file: raw.file ?? null, line: raw.line ?? null,
-            severity: raw.severity ?? null, description: raw.description ?? "", failure: raw.failure ?? null,
-            repeats: null, state: "New", checked: true,
-          });
+          this.s.findings.push(this.newFinding(id, raw, { parent: f.id, round: f.round, repeats: null }));
           fresh.push(id);
         }
       }
       this.leftover(req, seen, "Fixed", "Not verified");
       if (fresh.length) this.queueTriage(cx, fresh);
+      // After queueTriage, which clears the notice.
+      if (stray.length) this.s.notice = `The reviewer's follow-ups under ${stray.join(", ")} were dropped: not a finding this verify asked about.`;
     }
     this.save();
+    return fresh;
   }
 
   leftover(req, seen, back, note) {
@@ -779,7 +791,8 @@ export class Findings {
       .child(div().text_size(12).text_color(color ?? t.foreground).whitespace_normal().child(String(text))) : null;
 
     return v_flex().id(`lr-f-${f.id}`).flex_none().p(10).gap(6).rounded(8).border_1().border_color(t.border).bg(t.surface)
-      .when(depth > 0, (el) => el.ml(depth * 16))
+      // Capped: a deep chain stays readable in a narrow pane; the id shows the real depth.
+      .when(depth > 0, (el) => el.ml(Math.min(depth, 3) * 16))
       .when(done, (el) => el.opacity(0.5))
       .child(h_flex().gap(8).items_start()
         .child(div().id(`lr-cb-${f.id}`).pt(2).cursor_pointer()
