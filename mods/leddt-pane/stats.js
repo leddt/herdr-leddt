@@ -1,7 +1,7 @@
 // CPU and memory of what runs in a terminal: its root process (hc's `pid`) and
 // every descendant, since the program is usually a child of the shell.
 // One process table for every pane header (module code is shared by copies),
-// read at most once per INTERVAL. CPU is the tree's CPU time between two
+// read at most once per INTERVAL by whichever copy asks first. CPU is the tree's CPU time between two
 // reads, so it needs two of them.
 
 import { exec, hc, window } from "herdr";
@@ -53,14 +53,28 @@ async function readTable() {
 
 let prev = null;
 let cur = null;
-let reading = null;
+// When the read in flight started, 0 if none. Not a promise the copies share:
+// a copy's task isn't woken by a promise another copy's task settles, and a
+// read stops with its pane, so each copy only ever awaits its own. The others
+// take the last table meanwhile, and a read that never ends is given up on.
+let readingSince = 0;
+const GIVE_UP = 20000;
 
-function table() {
-  if (cur && Date.now() - cur.at < INTERVAL - 500) return Promise.resolve(cur);
-  reading ??= readTable()
-    .then((t) => { prev = cur; cur = t; return t; })
-    .finally(() => { reading = null; });
-  return reading;
+// The latest table, null before the first read ends.
+async function table() {
+  const now = Date.now();
+  // Fresh by when it was asked for, not when it came back (a read takes up to
+  // a second): else every other tick would find the last one still fresh.
+  if ((cur && now - cur.asked < INTERVAL - 500) || now - readingSince < GIVE_UP) return cur;
+  const mine = readingSince = now;
+  try {
+    const t = await readTable();
+    t.asked = mine;
+    if (!cur || t.at > cur.at) { prev = cur; cur = t; }
+  } finally {
+    if (readingSince === mine) readingSince = 0;
+  }
+  return cur;
 }
 
 // The terminal's root pid, asked once: it changes only when hc replaces a lost
@@ -84,9 +98,10 @@ function tree(t, pid) {
 
 // { cpu, rss, count, cores }: cpu in % of one core (null until the second
 // read), rss in bytes, count processes. null when the terminal's process
-// can't be found.
+// can't be found, or before the first read ends.
 export async function terminalStats(terminal) {
   const t = await table();
+  if (!t) return null;
   // The read before t: taken now, since another read can land during the await below.
   const before = prev;
   const pid = await root(terminal, t);

@@ -104,14 +104,16 @@ export default class Pane extends View {
     const p = this.me();
     const space = spaces().find((s) => s.tabs?.some((tb) => tb.id === p?.tab));
     const shown = space?.active && space.tabs.find((tb) => tb.id === p.tab)?.active;
-    if (!p?.terminal || !shown || space.machine || this.sampling) return;
-    this.sampling = true;
+    // A sample that never ended doesn't hold the next ones back forever.
+    const busy = this.sampling && Date.now() - this.sampling < 30000;
+    if (!p?.terminal || !shown || space.machine || busy) return;
+    const mine = this.sampling = Date.now();
     cx.spawn(async (cx) => {
       try {
         this.stats = await terminalStats(p.terminal);
         this.statsAt = Date.now();
       } catch { this.stats = null; }
-      this.sampling = false;
+      if (this.sampling === mine) this.sampling = 0;
       cx.notify();
     });
   }
