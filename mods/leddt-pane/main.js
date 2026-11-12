@@ -220,16 +220,18 @@ export default class Pane extends View {
     const t = theme();
     const p = this.me();
     if (!p) return div();
-    const name = p.mod === "leddt-review" ? "Review" : ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    // A mod pane can name itself (leddt.pane-titles: { [pane]: name }).
+    const own = p.mod ? shared("leddt.pane-titles")?.[p.pane] : null;
+    const name = own || (p.mod === "leddt-review" ? "Review" : ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell");
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
     const machine = spaces().find((s) => s.tabs?.some((tb) => tb.id === p.tab))?.machine ?? null;
     const claude = p.terminal && (p.program?.key === "claude" || p.app === "claude-code");
     const isClaude = claude && !machine;
-    // A mod pane (Findings) has no folder: its tab's first terminal's, shown
-    // and used for its splits (a plain pane.split would start in the space's folder).
-    const mateCwd = p.mod ? panes().find((x) => x.tab === p.tab && x.terminal && x.cwd)?.cwd ?? null : null;
+    // A mod pane (Findings) has no folder: the one it names (leddt.pane-folders), else its tab's
+    // first terminal's, shown and used for its splits (a plain pane.split would start in the space's folder).
+    const mateCwd = p.mod ? shared("leddt.pane-folders")?.[p.pane] ?? panes().find((x) => x.tab === p.tab && x.terminal && x.cwd)?.cwd ?? null : null;
     const split = (direction) => mateCwd
       ? this.action(t, `ph-${direction[0]}-${pane}`, `split-${direction}`, () => {
           run("pane.focus", { pane });

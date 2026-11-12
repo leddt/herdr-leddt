@@ -22,6 +22,29 @@ rsync -a --delete \
   --include="$PREFIX-*/" --include="$PREFIX-*/**" --exclude='*' \
   "$HOME_DIR/mods/" "$REPO/mods/"
 
+# Layouts: drop every block whose mod Herdr doesn't ship and this repo doesn't publish (mods
+# kept in another repo, e.g. a private one), so the published layout only needs what's here.
+# A stack that showed a dropped child shows its first one instead.
+node - "$HOME_DIR/installed.json" "$REPO" <<'EOF'
+const fs = require("fs"), path = require("path");
+const [installed, repo] = process.argv.slice(-2);
+const shipped = Object.keys(JSON.parse(fs.readFileSync(installed, "utf8"))).filter((k) => !k.includes(":"));
+const known = new Set([...shipped, ...fs.readdirSync(path.join(repo, "mods"))]);
+const dropped = (node) => node?.content?.mod && !known.has(node.content.mod);
+function strip(node) {
+  if (Array.isArray(node.children)) {
+    node.children = node.children.filter((c) => !dropped(c)).map(strip);
+    if (node.active && !node.children.some((c) => c.id === node.active)) node.active = node.children[0]?.id;
+  }
+  if (Array.isArray(node.floating)) node.floating = node.floating.filter((c) => !dropped(c)).map(strip);
+  return node;
+}
+for (const name of fs.readdirSync(path.join(repo, "layouts")).filter((f) => f.endsWith(".json"))) {
+  const file = path.join(repo, "layouts", name);
+  fs.writeFileSync(file, JSON.stringify(strip(JSON.parse(fs.readFileSync(file, "utf8"))), null, 2) + "\n");
+}
+EOF
+
 # Themes: every leddt-*.json.
 rsync -a --delete \
   --include="$PREFIX-*.json" --exclude='*' \

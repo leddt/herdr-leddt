@@ -145,14 +145,26 @@
                       "id": "branches",
                       "type": "block",
                       "content": {
-                        "mod": "leddt-branches"
+                        "mod": "leddt-branches",
+                        "props": {
+                          "panel": {
+                            "label": "Branches",
+                            "icon": "mods/workspace-chrome/git-branch.svg"
+                          }
+                        }
                       }
                     },
                     {
                       "id": "jira",
                       "type": "block",
                       "content": {
-                        "mod": "leddt-jira"
+                        "mod": "leddt-jira",
+                        "props": {
+                          "panel": {
+                            "label": "Jira",
+                            "icon": "mods/leddt-jira/jira.svg"
+                          }
+                        }
                       }
                     }
                   ],

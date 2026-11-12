@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, setShared } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, shared, setShared } from "herdr";
 
 // Files (leddt-files) shows a file asked for here: { path (absolute), on, at }.
 const OPEN_IN_FILES = "leddt-files.open";
@@ -11,7 +11,9 @@ function location() {
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
   // A mod pane (leddt-review's Findings…) has no folder: its tab's first terminal's.
   const tabCwd = pane?.mod ? ps.find(p => p.tab === pane.tab && p.terminal && p.cwd)?.cwd : null;
-  return { cwd: pane?.cwd || tabCwd || f?.cwd || space?.folder, on };
+  // A mod pane can name its own folder, even beside a terminal (leddt.pane-folders: { [pane]: folder }).
+  const modCwd = pane?.mod ? shared("leddt.pane-folders")?.[pane.pane] ?? null : null;
+  return { cwd: pane?.cwd || modCwd || tabCwd || f?.cwd || space?.folder, on };
 }
 const key = () => JSON.stringify(location());
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):

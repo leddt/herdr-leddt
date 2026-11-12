@@ -3,7 +3,9 @@
 My customizations to the [Herdr app](https://gpui-kit.com): a layout, a set of mods and a light theme, all under the `leddt` name.
 They're up to date with Herdr 0.1.15: the cloned mods have the shipped changes from 0.1.14 and 0.1.15. The layout and seven of the mods are clones of shipped ones, and the other mods and the theme are new.
 
-Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include.
+Edit them in `~/.config/herdr-app`, or `$HERDR_APP_HOME` when it's set (live reload works there), then run `./sync.sh` to copy them here. The script needs `rsync`, which Git Bash on Windows doesn't include, and `node`.
+
+Mods kept in another repo (a private one, say) can sit in the same Herdr home and have blocks in the installed layout. `sync.sh` only copies the `leddt-*` mods, and it drops from the published layouts every block whose mod Herdr doesn't ship (`installed.json`) and this repo doesn't have, so the published layout never names them. A stack that showed a dropped block shows its first child instead.
 
 ## Layout: `layouts/leddt.json`
 
@@ -24,7 +26,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 
 Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
 
-A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" button and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. Herdr's own tab creation (the terminal and agent buttons, the ⋯ menu, shortcuts) still starts in the space's folder.
+A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" button and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. A mod pane can also name its own folder in the shared value `leddt.pane-folders` (`{ [pane]: folder }`), which comes before its tab's terminal. Herdr's own tab creation (the terminal and agent buttons, the ⋯ menu, shortcuts) still starts in the space's folder.
 
 ## Cloned mods
 
@@ -56,12 +58,12 @@ These only show for panes running Claude Code:
 - **Review button** (on hover, local only, needs the pane's folder): reopens this agent's latest review on the current branch: it focuses the Findings pane if it's open, or opens it again to the right. When there's none, or with Shift+click, it opens the `leddt-review` branch picker to start a new one. Everything after that is in `leddt-review`. Pane mods aren't told their own pane id, so the pane of each session is remembered in the shared value `leddt-review.panes` when it opens (`review.js`). Sessions from before that fall back to the review pane in the agent's tab.
 - `context.js` (new) reads context usage from the session transcript.
 
-The header also names a `leddt-review` pane "Review" instead of the mod's name. For a mod pane, it shows the folder of the first terminal in its tab, and its split buttons open the new terminal there (`terminal.open`, since `pane.split` takes no folder).
+The header also names a `leddt-review` pane "Review" instead of the mod's name, and any mod pane that names itself in the shared value `leddt.pane-titles` (`{ [pane]: name }`) by that name. For a mod pane, it shows the folder it names in `leddt.pane-folders`, else the folder of the first terminal in its tab, and its split buttons open the new terminal there (`terminal.open`, since `pane.split` takes no folder).
 
 ### `leddt-tabs` (from `tabs`)
 
 - **Four new-tab buttons instead of "+"**: a terminal tab (`tab.new`, like Ctrl+Shift+T), a tab running the most used agent (the first installed one in `knownAgents()`, Claude if none; its icon shows which), "New Split Tab" (the pane header's split-right icon: an unnamed tab running that same agent with a shell split to its right, both in the space's current folder; `split.js`), and "⋯", which opens Herdr's new-tab menu. The agent list is shared with `new-menu` (`new-menu.agents`) and asked for again at most once a minute per machine.
-- **"Jira" panel button** next to Files and Changes. It's always shown (it isn't one of the welcome screen's `workspace.panels`), and it's remembered per space like the others.
+- **Panel buttons from the layout:** after Files and Changes, one button per block of the `panel-body` stack whose props have `panel: { label, icon }` (Branches and Jira here), shown once its mod's `main.js` is found in the Herdr home (checked again every 30s while it's missing, so a mod added later gets its button). These aren't among the welcome screen's `workspace.panels`, so they're always offered, and they're remembered per space like the others.
 
 ### `leddt-files` (from `files`)
 

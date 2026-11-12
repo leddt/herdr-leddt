@@ -12,7 +12,9 @@ function location() {
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
   // A mod pane (leddt-review's Findings…) has no folder: its tab's first terminal's.
   const tabCwd = pane?.mod ? ps.find(p => p.tab === pane.tab && p.terminal && p.cwd)?.cwd : null;
-  return { cwd: pane?.cwd || tabCwd || f?.cwd || space?.folder, on, space: space?.id };
+  // A mod pane can name its own folder, even beside a terminal (leddt.pane-folders: { [pane]: folder }).
+  const modCwd = pane?.mod ? shared("leddt.pane-folders")?.[pane.pane] ?? null : null;
+  return { cwd: pane?.cwd || modCwd || tabCwd || f?.cwd || space?.folder, on, space: space?.id };
 }
 const key = () => JSON.stringify(location());
 // Opens the folder Files is showing in Zed (its git repo root when inside one).

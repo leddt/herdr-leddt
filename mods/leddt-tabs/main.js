@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, knownAgents } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, knownAgents, readTextFile, appHome } from "herdr";
 import { newSplitTab } from "./split.js";
 
 // The agents each machine last reported, shared with new-menu (it writes the same key).
@@ -23,6 +23,23 @@ export default class Tabs extends View {
     this.scroll = ScrollHandle.new();
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     this.checked = {}; // machine → when its agents were last asked for
+    this.mods = {}; // mod → { ok, at }: whether its folder is in the Herdr home
+  }
+
+  // Whether `mod` is installed (mods/<mod>/main.js in the Herdr home). Asked once, then every
+  // 30s while it's missing, so a mod added later gets its button.
+  installed(cx, mod) {
+    if (!mod) return false;
+    const known = this.mods[mod];
+    if (!known || (!known.ok && Date.now() - known.at > 30000)) {
+      this.mods[mod] = { ok: known?.ok ?? false, at: Date.now() };
+      cx.spawn(async cx => {
+        const text = await readTextFile(`${appHome()}/mods/${mod}/main.js`).catch(() => null);
+        this.mods[mod] = { ok: text != null, at: Date.now() };
+        cx.notify();
+      });
+    }
+    return this.mods[mod].ok;
   }
 
   // The installed agent Herdr lists first on that machine (most picked), else Claude.
@@ -112,8 +129,13 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Branches and Jira aren't among the welcome screen's panels: always offered.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "branches", "jira"];
+    // The other panels come from the layout: each block of the panel-body stack whose props have
+    // `panel: { label, icon }`, offered whenever its mod is installed (they aren't among the
+    // welcome screen's panels).
+    // The remembered panel of each space counts them all, so one isn't dropped while its check runs.
+    const others = (body?.children ?? []).filter(c => c.id !== "files" && c.id !== "changes" && c.content?.props?.panel);
+    const extras = others.filter(c => this.installed(cx, c.content.mod));
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...others.map(c => c.id)];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -141,8 +163,7 @@ export default class Tabs extends View {
         .child(button("tab-new", svg("mods/leddt-tabs/more.svg").size(14), () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })).tooltip("More…")))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .child(panelButton("branches", "Branches", "mods/workspace-chrome/git-branch.svg"))
-      .child(panelButton("jira", "Jira", "mods/leddt-jira/jira.svg"))
+      .children(extras.map(c => panelButton(c.id, c.content.props.panel.label ?? c.id, c.content.props.panel.icon)))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/leddt-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/leddt-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/leddt-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
