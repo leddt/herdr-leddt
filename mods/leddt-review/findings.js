@@ -2,6 +2,8 @@
 // workflow. Each finding moves New → Triaging → Triaged → Fixing → Fixed →
 // Verifying → Verified (done, grayed out). New, Triaged and Fixed findings can
 // also be Ignored, which counts as done too (and Restore puts them back).
+// A verify can raise follow-ups: new findings numbered under the one checked
+// (R1-2.1, R1-2.1.1…), triaged straight away and listed under their parent.
 //
 // Every step is a "request": a message typed into one of the two agents with
 // `hc send`, asking it to write a JSON file into the session folder. The pane
@@ -284,8 +286,9 @@ export class Findings {
       catch (e) { if (final) this.fail(req, `${req.file}: ${e?.message ?? e}`, cx); continue; }
       this.done(req);
       // The new findings' lines as the reviewer saw them, for the diff view.
-      if (req.kind === "report") {
-        await captureAnchors(this.s, this.s.findings.filter((f) => f.round === req.round)).catch(() => null);
+      if (req.kind === "report" || req.kind === "verify") {
+        const fresh = req.kind === "report" ? (f) => f.round === req.round : (f) => f.parent && f.anchor === undefined;
+        await captureAnchors(this.s, this.s.findings.filter(fresh)).catch(() => null);
         this.save();
       }
     }
@@ -341,18 +344,34 @@ export class Findings {
       this.fixGen = (this.fixGen ?? 0) + 1;
       this.leftover(req, seen, "Triaged", "Not reported as fixed");
     } else if (req.kind === "verify") {
-      const seen = new Set();
-      for (const x of list("verify")) {
+      const entries = list("verify");
+      if (entries.some((x) => x.follow_ups != null && (!Array.isArray(x.follow_ups) || x.follow_ups.some((y) => !y || typeof y !== "object" || Array.isArray(y)))))
+        throw new Error('"follow_ups" must be a list of objects');
+      const seen = new Set(), fresh = [];
+      for (const x of entries) {
         const f = this.find(String(x.id));
-        if (!f || !req.ids.includes(f.id)) continue;
+        if (!f || !req.ids.includes(f.id) || seen.has(f.id)) continue;
         const ok = x.verified === true;
         f.verify = { ok, note: x.note ?? "" };
         // Not fixed after all: back to Triaged, to fix again.
         f.state = ok ? "Verified" : "Triaged";
         if (ok) f.checked = false;
         seen.add(f.id);
+        // New points the fix raised: findings of their own, numbered under it (R1-2.1, R1-2.1.1…).
+        let k = this.s.findings.filter((c) => c.parent === f.id).length;
+        for (const raw of x.follow_ups ?? []) {
+          let id;
+          do id = `${f.id}.${++k}`; while (this.find(id));
+          this.s.findings.push({
+            id, parent: f.id, round: f.round, title: raw.title ?? "(untitled)", file: raw.file ?? null, line: raw.line ?? null,
+            severity: raw.severity ?? null, description: raw.description ?? "", failure: raw.failure ?? null,
+            repeats: null, state: "New", checked: true,
+          });
+          fresh.push(id);
+        }
       }
       this.leftover(req, seen, "Fixed", "Not verified");
+      if (fresh.length) this.queueTriage(cx, fresh);
     }
     this.save();
   }
@@ -697,7 +716,7 @@ export class Findings {
         .child(v_flex().id(`lr-list-${this.listGen ?? 0}`).absolute().inset_0().overflow_y_scroll().p(8).gap(6)
           .when(!total && !work.length && !s.notice, (el) => el.child(div().p(8).text_color(t.dim).child("No findings yet.")))
           .when(total > 0 && !shown.length, (el) => el.child(div().p(8).text_color(t.dim).child("Every finding is archived.")))
-          .children(this.mode === "diff" && shown.length ? this.diffView(t) : shown.map((f) => this.card(f, t)))))
+          .children(this.mode === "diff" && shown.length ? this.diffView(t) : this.tree(shown).map(([f, depth]) => this.card(f, t, depth)))))
       // Actions.
       .child(h_flex().flex_none().px(10).py(8).gap(6).items_center().border_t(1).border_color(t.border)
         .child(h_flex().id("lr-all").gap(6).items_center().cursor_pointer().text_size(11.5).text_color(t.muted)
@@ -734,7 +753,19 @@ export class Findings {
       .child(text);
   }
 
-  card(f, t) {
+  // The list in order with each follow-up right under its parent: [finding, depth].
+  // A follow-up whose parent isn't in the list (archived) stands at the top level.
+  tree(list) {
+    const ids = new Set(list.map((f) => f.id));
+    const kids = new Map();
+    for (const f of list) if (f.parent && ids.has(f.parent)) kids.set(f.parent, [...(kids.get(f.parent) ?? []), f]);
+    const out = [];
+    const walk = (f, depth) => { out.push([f, depth]); for (const c of kids.get(f.id) ?? []) walk(c, depth + 1); };
+    for (const f of list) if (!f.parent || !ids.has(f.parent)) walk(f, 0);
+    return out;
+  }
+
+  card(f, t, depth = 0) {
     const done = DONE.has(f.state);
     const busy = Boolean(BUSY_BACK[f.state]);
     const stateColor = { New: t.muted, Triaging: t.working, Triaged: t.accent, Fixing: t.working, Fixed: t.done, Verifying: t.working, Verified: t.dim, Ignored: t.dim }[f.state] ?? t.muted;
@@ -748,6 +779,7 @@ export class Findings {
       .child(div().text_size(12).text_color(color ?? t.foreground).whitespace_normal().child(String(text))) : null;
 
     return v_flex().id(`lr-f-${f.id}`).flex_none().p(10).gap(6).rounded(8).border_1().border_color(t.border).bg(t.surface)
+      .when(depth > 0, (el) => el.ml(depth * 16))
       .when(done, (el) => el.opacity(0.5))
       .child(h_flex().gap(8).items_start()
         .child(div().id(`lr-cb-${f.id}`).pt(2).cursor_pointer()

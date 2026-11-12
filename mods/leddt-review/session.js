@@ -113,7 +113,11 @@ export function reportTask(s, round, file) {
   ].join("\n");
 }
 
-const brief = (f) => ({ id: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, failure: f.failure });
+const brief = (f) => ({
+  id: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, failure: f.failure,
+  // A follow-up: raised while verifying the fix of that finding.
+  ...(f.parent ? { follow_up_of: f.parent } : {}),
+});
 
 export function triageTask(s, findings, file) {
   return [
@@ -167,6 +171,11 @@ export function verifyTask(s, findings, file) {
     file,
     "",
     'Shape: {"verify":[{"id":"R1-1","verified":true,"note":"what you checked; if not fixed, what\'s still wrong"}]}',
+    "",
+    "If checking a fix turns up new problems that are not the original finding (the fix holds but raises another point, or brings in a new issue), " +
+    'add them to that entry as "follow_ups": [{"title":"one line","file":"path/from/repo/root","line":42,"severity":"low|medium|high","description":"what\'s wrong and why","failure":"concrete scenario that breaks"}]. ' +
+    "Don't give them ids (they're numbered after their finding: R1-2.1, R1-2.2, ...), and leave follow_ups out when there are none. " +
+    "What's still wrong with the original finding goes in the note, not in follow_ups.",
     "",
     "Findings:",
     JSON.stringify(findings.map((f) => ({ ...brief(f), fix_note: f.fix?.note ?? null, ...withInstruction(f.fix?.instruction) }))),
