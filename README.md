@@ -24,7 +24,7 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 
 Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
 
-A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" dialog and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. Herdr's own tab creation (the + menu, shortcuts) still starts in the space's folder.
+A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" button and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. Herdr's own tab creation (the terminal and agent buttons, the ⋯ menu, shortcuts) still starts in the space's folder.
 
 ## Cloned mods
 
@@ -60,7 +60,7 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name. 
 
 ### `leddt-tabs` (from `tabs`)
 
-- **"New Split Tab" button** after the tabs, with the pane header's split-right icon. It opens the `leddt-split` dialog.
+- **Four new-tab buttons instead of "+"**: a terminal tab (`tab.new`, like Ctrl+Shift+T), a tab running the most used agent (the first installed one in `knownAgents()`, Claude if none; its icon shows which), "New Split Tab" (the pane header's split-right icon: an unnamed tab running that same agent with a shell split to its right, both in the space's current folder; `split.js`), and "⋯", which opens Herdr's new-tab menu. The agent list is shared with `new-menu` (`new-menu.agents`) and asked for again at most once a minute per machine.
 - **"Jira" panel button** next to Files and Changes. It's always shown (it isn't one of the welcome screen's `workspace.panels`), and it's remembered per space like the others.
 
 ### `leddt-files` (from `files`)
@@ -149,10 +149,6 @@ A code-review loop for a Claude pane, started from the pane header's **Review** 
 ### `leddt-command`
 
 A full-width command line between the panes and the status bar, with only a top border. It starts with a terminal icon and the folder the command will run in, then `>`, so it doesn't read as an agent's prompt. Type a command and press Enter: a new terminal opens below the focused pane of the shown tab (its first pane when the focus is elsewhere), in that pane's folder (for a mod pane, the tab's first terminal's), and runs it. The terminal is named after the command and stays at a shell prompt when the command ends: on Windows, PowerShell 7 (`pwsh -NoExit -Command`, or Windows PowerShell when `pwsh` isn't installed); elsewhere and on other machines, `$SHELL -ic`, then an interactive `$SHELL`. Up/Down go through the last 100 commands (the mod's `localStorage`), Esc clears the field.
-
-### `leddt-split`
-
-A dialog that asks for a tab name, then opens a new tab running the most used agent (the first installed one in `knownAgents()`, Claude if none) with a shell split to its right. Both start in the space's current folder. Press Enter to create the tab or Esc to cancel.
 
 ## Theme: `themes/leddt-solarized-light.json`
 

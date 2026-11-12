@@ -1,6 +1,12 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, knownAgents } from "herdr";
+import { newSplitTab } from "./split.js";
+
+// The agents each machine last reported, shared with new-menu (it writes the same key).
+const KNOWN = "new-menu.agents";
+// Until knownAgents() has answered, or when it lists none installed.
+const FALLBACK_AGENT = { key: "claude", name: "Claude Code", icon: "icons/claude.svg", tint: false, run: ["claude"] };
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -16,6 +22,24 @@ export default class Tabs extends View {
     this.pressed = null;
     this.scroll = ScrollHandle.new();
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    this.checked = {}; // machine → when its agents were last asked for
+  }
+
+  // The installed agent Herdr lists first on that machine (most picked), else Claude.
+  // Asks again at most once a minute per machine (Herdr caches as long).
+  topAgent(cx, machine) {
+    const where = machine ?? "";
+    if (!(Date.now() - (this.checked[where] ?? 0) < 60000)) {
+      this.checked[where] = Date.now();
+      cx.spawn(async cx => {
+        try {
+          const list = await knownAgents({ on: machine });
+          setShared(KNOWN, { ...shared(KNOWN), [where]: list });
+          cx.notify();
+        } catch { /* keep the last list */ }
+      });
+    }
+    return (shared(KNOWN)?.[where] ?? []).find(a => a.installed && a.run?.length) ?? FALLBACK_AGENT;
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -46,7 +70,7 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
@@ -57,6 +81,7 @@ export default class Tabs extends View {
       this.selectedIndex = active;
       if (active >= 0) this.scroll.scroll_to_item(active);
     }
+    const agent = this.topAgent(cx, space?.machine);
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
@@ -105,13 +130,15 @@ export default class Tabs extends View {
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
-        .children(shown.map(item))
-        .child(h_flex().id("tab-leddt-split").h(26).px(8).gap(5).flex_none().ml(3).items_center().rounded(6).text_size(12).text_color(t.muted)
-        .hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
-        .tooltip("New tab: your most used agent with a terminal beside it (asks for a name)")
-        .on_click(() => { if (space) openOverlay({ mod: "leddt-split", kind: "dialog", width: 400, height: 200, props: { space: space.id } }); })
-        .child(svg("mods/pane/split-right.svg").size(14)).child("New Split Tab")))
-      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+        .children(shown.map(item)))
+      .child(h_flex().flex_none().items_center().rounded(7).border(1).border_color(t.border)
+        .child(button("tab-new-terminal", svg("icons/shell.svg").size(14), () => run("tab.new", { space: space?.id })).tooltip("New terminal tab (Ctrl+Shift+T)"))
+        .child(button("tab-new-agent", agent.tint ? svg(agent.icon).size(14) : image(agent.icon).size(14),
+          () => run("tab.new", { name: agent.name, space: space?.id, argv: agent.run })).tooltip(`New ${agent.name} tab`))
+        .child(button("tab-leddt-split", svg("mods/pane/split-right.svg").size(14),
+          (_e, cx) => { if (space) cx.spawn(cx => newSplitTab(cx, space.id, agent)); })
+          .tooltip(`New Split Tab: ${agent.name} with a terminal beside it`))
+        .child(button("tab-new", svg("mods/leddt-tabs/more.svg").size(14), () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })).tooltip("More…")))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("branches", "Branches", "mods/workspace-chrome/git-branch.svg"))
