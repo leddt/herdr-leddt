@@ -70,6 +70,7 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name, 
 - **"Open in Zed" button** in the header. It opens the folder you're viewing (or its git repo root, if it's inside one) with `zeditor`, or `zed` when `zeditor` isn't installed (Windows, macOS).
 - **Folder of a mod pane:** see the note under the layout.
 - **Opens a file asked for by `leddt-changes`** (a double-click there) **or `leddt-review`** (a file name in the Findings pane's Diff view): it shows the file and opens its folders in the tree, so ← goes back to it. The request is the shared value `leddt-files.open` (`{ path, on, at }`); it's only honoured within 10s and once, since shared values persist. A file outside the folder Files is browsing (when the focused pane is below the repo root) gets a warning instead.
+- **Markdown preview:** hovering a `.md` (or `.markdown`, `.mdx`) file shows an eye button, also in the header while that file is shown. It opens a `leddt-markdown` pane to the right of the focused pane of the shown tab, or focuses the one already showing that file in this tab. Shift+click opens it in a new tab instead, named after the file. The new pane is named after the file (`leddt.pane-titles`) and names the folder Files is browsing (`leddt.pane-folders`), so Files stays put when it's focused. Previews are tracked in the shared value `leddt-markdown.panes` (`{ [pane]: { file, on } }`); entries of closed panes are dropped when a new preview opens. Its `eye.svg` is in the mod's folder.
 
 ### `leddt-changes` (from `changes`)
 
@@ -147,6 +148,10 @@ A code-review loop for a Claude pane, started from the pane header's **Review** 
 - **Persistence:** each session lives in `<Herdr home>/data/leddt-review-sessions/<id>/` (`state.json` plus the agents' files), not in this repo. Pending requests are saved before they're sent, so a reload or restart picks up waiting where it left off without sending twice. A result file is validated in full before anything changes. If the state can't be saved, a notification says so (once per run of failures).
 - **Key commands:** `leddt-review:fix`, `leddt-review:verify`, `leddt-review:loop` and `leddt-review:triage` can be bound in `keys.json` (they reach every Findings pane on screen, but only the one whose agent or reviewer is in the focused tab acts).
 - The original agent isn't started by the mod, so its first write to the session folder may ask for permission, depending on its mode. An allow rule for `Edit(~/.config/herdr-app/data/leddt-review-sessions/**)` in `~/.claude/settings.json` avoids that.
+
+### `leddt-markdown`
+
+A pane that renders a markdown file (`TextView.markdown`, text selectable), opened from the eye button in `leddt-files`. Its props are `{ file, on }` (an absolute path, and the machine). It reads the file again when it changes: a folder watch for local files, every 5s for a file on another machine. Files over 400 KB are cut. A link to another `.md` file opens it in the same pane, with a ← bar to go back; a web link, or a link to another local file, opens with the system's default app (`xdg-open`, `open`, or `Start-Process` on Windows).
 
 ### `leddt-command`
 

@@ -1,10 +1,38 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared, notify, appHome } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared, setShared, notify, appHome, run } from "herdr";
 
 // Set by leddt-changes (double-click on a changed file): { path (absolute), on, at }.
 const OPEN_IN_FILES = "leddt-files.open";
+
+// Markdown previews: a leddt-markdown pane beside the focused pane of the shown tab.
+// Its pane is named after the file (leddt.pane-titles) and keeps Files on this folder
+// (leddt.pane-folders); leddt-markdown.panes ({ [pane]: { file, on } }) finds it again.
+const isMarkdown = (name) => /\.(md|markdown|mdx)$/i.test(name);
+const PREVIEWS = "leddt-markdown.panes";
+// newTab (shift+click): a tab of its own, named after the file, in the shown space.
+function previewMarkdown(file, on, folder, newTab) {
+  const f = focused(), all = panes(), name = file.split(/[\\/]/).pop();
+  if (!f?.tab) return;
+  const tab = all.filter(p => p.tab === f.tab), mine = shared(PREVIEWS) ?? {};
+  if (newTab) run("tab.new", { name, space: f.space, mod: "leddt-markdown", props: { file, on } });
+  else {
+    const open = tab.find(p => p.mod === "leddt-markdown" && mine[p.pane]?.file === file && (mine[p.pane]?.on ?? null) === (on ?? null));
+    if (open) return run("pane.focus", { pane: open.pane });
+    const beside = tab.find(p => p.pane === f.pane) ?? tab[0];
+    if (!beside) return;
+    run("pane.split", { direction: "right", pane: beside.pane, mod: "leddt-markdown", props: { file, on } });
+  }
+  const added = panes().find(p => p.mod === "leddt-markdown" && (newTab || p.tab === f.tab) && !all.some(q => q.pane === p.pane));
+  if (!added) return;
+  // Entries of closed panes go as new ones come.
+  const live = new Set(panes().map(p => p.pane));
+  const keep = (map) => Object.fromEntries(Object.entries(map ?? {}).filter(([p]) => live.has(p)));
+  setShared(PREVIEWS, { ...keep(mine), [added.pane]: { file, on } });
+  setShared("leddt.pane-titles", { ...keep(shared("leddt.pane-titles")), [added.pane]: name });
+  setShared("leddt.pane-folders", { ...keep(shared("leddt.pane-folders")), [added.pane]: folder });
+}
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -232,6 +260,14 @@ export default class Files extends View {
     });
   }
 
+  previewButton(id, path, t) {
+    return div().id(id).flex_none().p(3).rounded(5)
+      .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
+      .tooltip("Preview (Shift: in a new tab)")
+      .on_click((e, cx) => { cx.stop_propagation(); previewMarkdown(`${this.root}/${path}`, this.on, this.root, !!e.modifiers?.shift); })
+      .child(svg("mods/leddt-files/eye.svg").size(14));
+  }
+
   rows(prefix, depth, out, t) {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
@@ -248,6 +284,7 @@ export default class Files extends View {
         .child(entry.dir ? svg(`mods/leddt-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/leddt-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
+        .when(this.hovered === path && !entry.dir && isMarkdown(entry.name), el => el.child(this.previewButton(`file-preview-${path}`, path, t)))
         .when(Boolean(app), el => el.child(div().id(`file-open-${path}`).flex_none().p(3).rounded(5)
           .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.background).text_color(t.foreground))
           .tooltip(`Open with ${app.name}`)
@@ -306,6 +343,7 @@ export default class Files extends View {
         .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""))
+        .when(Boolean(this.file) && isMarkdown(this.file ?? ""), el => el.child(this.previewButton("files-preview", this.file, t)))
         .when(Boolean(this.root) && !this.on, el => el.child(div().id("files-zed").flex_none().px(8).py(2).rounded(6).border_1().border_color(t.border)
           .text_size(12).text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => { openInZed(this.root); }).child("Open in Zed"))))
