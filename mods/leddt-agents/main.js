@@ -27,6 +27,17 @@ function toggleSidebar() {
 
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
+// Done: replaces the Claude pane with a fresh Claude in the same place and folder (~30 ms;
+// Claude itself takes a second or two to start). A new pane is split off this one, then
+// this one closes and ends its Claude: the session stays on disk, resumable with /resume.
+// Not /clear: hc holds typed keys for ~3 s of quiet after a person types, which still
+// delayed the click by about 3 s, and Herdr has no other way to type into a terminal.
+function freshClaude(pane) {
+  if (!pane) return; // without a pane (a sub-agent), a split would land on the focused pane
+  run("pane.split", { pane, direction: "right", argv: ["claude"] });
+  run("pane.close", { pane });
+}
+
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
 // blocked. It's never done: it reports to its parent, and the parent's done is the news.
@@ -368,10 +379,7 @@ export default class Agents extends View {
         .tooltip("Done: archive this session, start a fresh one")
         .on_click((_e, cx) => {
           cx.stop_propagation();
-          cx.spawn(async () => {
-            const res = await hc(["keys", a.address, "/", "c", "l", "e", "a", "r", "enter"]);
-            if (res.code !== 0) notify({ title: "Couldn't start a fresh session", body: (res.stderr || res.stdout).trim(), level: "error" });
-          });
+          freshClaude(a.pane);
         })
         .child(svg("mods/workspace-chrome/check.svg").size(13));
       // Under a space header the space goes without saying; an automatic tab number says nothing.

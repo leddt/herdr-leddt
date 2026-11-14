@@ -70,25 +70,6 @@ async function claudeSession(terminal) {
   return null;
 }
 
-function openUrl(url) {
-  const p = platform();
-  if (p === "windows") return exec("explorer.exe", [url]);
-  return exec(p === "macos" ? "open" : "xdg-open", [url]);
-}
-
-async function openInDesktop(terminal) {
-  try {
-    const id = await claudeSession(terminal);
-    if (!id) {
-      notify({ title: "No Claude session found", body: `Couldn't find the session running in ${terminal}.`, level: "warning" });
-      return;
-    }
-    await openUrl(`claude://resume?session=${id}`);
-  } catch (e) {
-    notify({ title: "Couldn't open Claude Desktop", body: String(e?.message ?? e), level: "error" });
-  }
-}
-
 export default class Pane extends View {
   init(_props, cx) {
     this.hovered = false;
@@ -277,36 +258,6 @@ export default class Pane extends View {
           })
           .child(svg("mods/leddt-review/git-compare.svg").size(13))
           .child("Review")))
-      // Done: archive this Claude session (resumable with /resume) and start a fresh one in place.
-      .when(this.hovered && claude, el => el.child(
-        div()
-          .id(`ph-done-${pane}`)
-          .p(3)
-          .rounded(4)
-          .text_color(t.dim)
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .tooltip("Done: archive this session, start a fresh one")
-          .on_click((_e, cx) => {
-            cx.stop_propagation();
-            cx.spawn(async () => {
-              const res = await hc(["keys", p.terminal, "/", "c", "l", "e", "a", "r", "enter"]);
-              if (res.code !== 0) notify({ title: "Couldn't start a fresh session", body: (res.stderr || res.stdout).trim(), level: "error" });
-            });
-          })
-          .child(svg("mods/workspace-chrome/check.svg").size(14))))
-      .when(this.hovered && isClaude, el => el.child(
-        div()
-          .id(`ph-cd-${pane}`)
-          .p(3)
-          .rounded(4)
-          .text_color(t.dim)
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .tooltip("Open this session in Claude Desktop")
-          .on_click((_e, cx) => {
-            cx.stop_propagation();
-            cx.spawn(async () => openInDesktop(p.terminal));
-          })
-          .child(svg("mods/leddt-pane/open-desktop.svg").size(14))))
       .when(this.hovered, el => el
         .child(split("right"))
         .child(split("down"))

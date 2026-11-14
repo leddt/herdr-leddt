@@ -43,7 +43,7 @@ A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one i
 - **Two-line rows** (42px instead of 30px). The first line is the space name, plus the tab name only when someone named the tab. The second line is always the agent's own name, which for Claude is its session name. The shipped heuristics that guess a label from the tab or terminal title are gone.
 - **Space avatar with the agent's icon:** each row shows its space's avatar from `leddt-spaces` (project icon or coloured letter), with the agent's icon smaller on its bottom-right corner. Until `leddt-spaces` has published the avatar, the row shows the agent's icon alone. Sub-agent rows keep the agent's icon only.
 - **Rename a Claude session:** double-click a Claude row to open a dialog that sends `/rename <name>` to the session.
-- **Done button** (✓, on hover, Claude rows only): sends `/clear`, which archives the session (you can get it back with `/resume`) and starts a fresh one in place.
+- **Done button** (✓, on hover, Claude rows only): replaces the agent's pane with a fresh Claude Code in the same place and folder. It splits a new pane running `claude` off the old one, then closes the old one, which ends its Claude (the session stays on disk: get it back with `/resume`). The swap is instant; Claude takes a second or two to start. It doesn't send `/clear`: hc holds typed keys for about 3 s after a person types, and Herdr has no other way to type into a terminal.
 - The sort menu popup opens from `leddt-agents`.
 
 ### `leddt-pane` (from `pane`)
@@ -53,8 +53,6 @@ A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one i
 These only show for panes running Claude Code:
 
 - **Context chip** at the right edge of the header: a small bar with the context % (it changes colour at 65% and again at 85%). It refreshes every 5s and is shared as `leddt-context:<terminal>`. Click it to open the `leddt-context` popover. It only appears on local machines.
-- **Done button** (✓, on hover): sends `/clear`, the same as in `leddt-agents`.
-- **Open in Claude Desktop** (on hover, local only): finds the session ID from `~/.claude/sessions/<pid>.json` (it walks child processes, because Claude often runs under a shell wrapper) and opens `claude://resume?session=<id>`.
 - **Review button** (on hover, local only, needs the pane's folder): reopens this agent's latest review on the current branch: it focuses the Findings pane if it's open, or opens it again to the right. When there's none, or with Shift+click, it opens the `leddt-review` branch picker to start a new one. Everything after that is in `leddt-review`. Pane mods aren't told their own pane id, so the pane of each session is remembered in the shared value `leddt-review.panes` when it opens (`review.js`). Sessions from before that fall back to the review pane in the agent's tab.
 - `context.js` (new) reads context usage from the session transcript.
 
