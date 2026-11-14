@@ -1,37 +1,126 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared, setShared, notify, appHome, run } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, shared, setShared, notify, appHome, run } from "herdr";
 
 // Set by leddt-changes (double-click on a changed file): { path (absolute), on, at }.
 const OPEN_IN_FILES = "leddt-files.open";
 
-// Markdown previews: a leddt-markdown pane beside the focused pane of the shown tab.
-// Its pane is named after the file (leddt.pane-titles) and keeps Files on this folder
-// (leddt.pane-folders); leddt-markdown.panes ({ [pane]: { file, on } }) finds it again.
+// Previews: a leddt-markdown or leddt-image pane in the shown tab. A click reuses the
+// latest one (focused as is when it already shows the file); Ctrl+click splits a new one
+// beside the focused pane, Shift+click opens one in a new tab named after the file.
+// <mod>.panes ({ [pane]: { file, on, id, at } }) finds them again: id (also in its props)
+// addresses it, at is when it was last given a file. A pane of the same mod is sent the
+// file (leddt-preview.show { [id]: { file, on, at } }); one of the other mod, or from before
+// ids, is replaced by a new pane where it is. Each pane is named after its file
+// (leddt.pane-titles) and keeps Files on this folder (leddt.pane-folders).
 const isMarkdown = (name) => /\.(md|markdown|mdx)$/i.test(name);
-const PREVIEWS = "leddt-markdown.panes";
-// newTab (shift+click): a tab of its own, named after the file, in the shown space.
-function previewMarkdown(file, on, folder, newTab) {
+const isImage = (name) => /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif)$/i.test(name);
+// The mod that previews a file, or null. Images are read from disk by path: local only.
+const previewer = (name, on) => isMarkdown(name) ? "leddt-markdown" : isImage(name) && !on ? "leddt-image" : null;
+const PREVIEW_MODS = ["leddt-markdown", "leddt-image"];
+const SHOW = "leddt-preview.show";
+// Images: image() only reads under the app folder, so one is shown from a copy in
+// data/leddt-image/. An SVG's copy is drawn at the shown size, so it's sharp.
+// The same code as leddt-image's (Linux, macOS, Windows).
+const COPIES = "data/leddt-image";
+const hash = (s) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.codePointAt(0), 16777619); return (h >>> 0).toString(36); };
+// Deletes the copies named <key>-* and any made over a day ago, then copies file there as name.
+async function prepare(key, file, name) {
+  const dir = `${appHome()}/${COPIES}`;
+  const r = window()?.platform === "windows"
+    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+        `$d = ${psQuote(dir.replace(/\//g, "\\"))}; New-Item -ItemType Directory -Force -Path $d | Out-Null; `
+        + `Get-ChildItem -LiteralPath $d -File | Where-Object { $_.CreationTime -lt (Get-Date).AddDays(-1) -or $_.Name.StartsWith(${psQuote(key + "-")}) } | Remove-Item -Force -ErrorAction SilentlyContinue; `
+        + (file ? `Copy-Item -LiteralPath ${psQuote(file.replace(/\//g, "\\"))} -Destination (Join-Path $d ${psQuote(name)})` : "")])
+    : await exec("sh", ["-c", 'mkdir -p "$1" && { find "$1" -type f -mtime +1 -delete; rm -f "$1/$2"-*; } 2>/dev/null; [ -z "$3" ] || cp "$3" "$1/$4"',
+        "sh", dir, key, file ?? "", name ?? ""]);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || "copy failed");
+}
+// An SVG's size in pixels, from its root's width/height, else its viewBox (300×150 without either).
+function svgSize(text) {
+  const tag = /<svg\b[^>]*>/i.exec(text)?.[0] ?? "";
+  const attr = (n) => new RegExp(`\\s${n}\\s*=\\s*(["'])(.*?)\\1`, "i").exec(tag)?.[2];
+  const num = (v) => { const m = /^\s*([\d.]+)\s*(px)?\s*$/i.exec(v ?? ""); return m ? Number(m[1]) || null : null; };
+  const vb = attr("viewBox")?.trim().split(/[\s,]+/).map(Number), vw = vb?.length === 4 ? vb[2] : null, vh = vb?.length === 4 ? vb[3] : null;
+  let w = num(attr("width")), h = num(attr("height"));
+  if (!w && !h) { w = vw || 300; h = vh || 150; }
+  else if (!w) w = vw && vh ? h * vw / vh : h;
+  else if (!h) h = vw && vh ? w * vh / vw : w;
+  return { w, h };
+}
+// The SVG drawn W×H pixels: its root's width and height replaced (a viewBox added when it has none).
+function svgSized(text, W, H) {
+  const m = /<svg\b[^>]*>/i.exec(text);
+  if (!m) return text;
+  const { w, h } = svgSize(text);
+  let tag = m[0].replace(/\s(width|height)\s*=\s*(["']).*?\2/gi, "");
+  const box = /\sviewBox\s*=/i.test(tag) ? "" : ` viewBox="0 0 ${w} ${h}"`;
+  tag = tag.replace(/^<svg\b/i, `<svg width="${W}" height="${H}"${box}`);
+  return text.slice(0, m.index) + tag + text.slice(m.index + m[0].length);
+}
+// A copy of the SVG drawn W×H, or of any other image; its path for image().
+async function imageCopy(key, file, ext, svgText, W, H) {
+  const name = `${key}-${Date.now()}.${svgText != null ? "svg" : ext}`;
+  if (svgText != null) {
+    await prepare(key);
+    await writeTextFile(`${appHome()}/${COPIES}/${name}`, svgSized(svgText, W, H), null);
+  } else await prepare(key, file, name);
+  return `${COPIES}/${name}`;
+}
+// mode: "reuse" (a click), "pane" (Ctrl), "tab" (Shift).
+function preview(file, on, folder, mode, cx) {
+  const mod = previewer(file, on);
   const f = focused(), all = panes(), name = file.split(/[\\/]/).pop();
-  if (!f?.tab) return;
-  const tab = all.filter(p => p.tab === f.tab), mine = shared(PREVIEWS) ?? {};
-  if (newTab) run("tab.new", { name, space: f.space, mod: "leddt-markdown", props: { file, on } });
+  if (!mod || !f?.tab) return;
+  on = on ?? null;
+  const tab = all.filter(p => p.tab === f.tab), entry = (p) => shared(`${p.mod}.panes`)?.[p.pane];
+  // Untracked ones (opened before ids) count as the oldest, and are replaced.
+  const previews = tab.filter(p => PREVIEW_MODS.includes(p.mod)).sort((a, b) => (entry(b)?.at ?? 0) - (entry(a)?.at ?? 0));
+  const id = Math.random().toString(36).slice(2), at = Date.now(), value = { file, on, id, at };
+  if (mode === "reuse") {
+    const same = previews.find(p => p.mod === mod && entry(p)?.file === file && (entry(p)?.on ?? null) === on);
+    if (same) { remember(same.pane, mod, { ...entry(same), at }, name, folder); return run("pane.focus", { pane: same.pane }); }
+    const last = previews[0];
+    if (last?.mod === mod && entry(last)?.id) {
+      // Requests a minute old are done with.
+      const pending = Object.fromEntries(Object.entries(shared(SHOW) ?? {}).filter(([, r]) => at - (r?.at ?? 0) < 60000));
+      setShared(SHOW, { ...pending, [entry(last).id]: { file, on, at } });
+      remember(last.pane, mod, { ...value, id: entry(last).id }, name, folder);
+      return run("pane.focus", { pane: last.pane });
+    }
+    if (last) {
+      // The other kind, or untracked: a new pane where it is, and then it goes.
+      run("pane.split", { direction: "right", pane: last.pane, mod, props: { file, on, id } });
+      return adopt(cx, all, mod, f.tab, value, name, folder, last.pane);
+    }
+  }
+  if (mode === "tab") run("tab.new", { name, space: f.space, mod, props: { file, on, id } });
   else {
-    const open = tab.find(p => p.mod === "leddt-markdown" && mine[p.pane]?.file === file && (mine[p.pane]?.on ?? null) === (on ?? null));
-    if (open) return run("pane.focus", { pane: open.pane });
     const beside = tab.find(p => p.pane === f.pane) ?? tab[0];
     if (!beside) return;
-    run("pane.split", { direction: "right", pane: beside.pane, mod: "leddt-markdown", props: { file, on } });
+    run("pane.split", { direction: "right", pane: beside.pane, mod, props: { file, on, id } });
   }
-  const added = panes().find(p => p.mod === "leddt-markdown" && (newTab || p.tab === f.tab) && !all.some(q => q.pane === p.pane));
-  if (!added) return;
-  // Entries of closed panes go as new ones come.
+  adopt(cx, all, mod, mode === "tab" ? null : f.tab, value, name, folder, null);
+}
+// A pane opened by a command shows up in panes() a little later: looks for it (a pane of
+// mod, in tab when given, that wasn't in before) for up to 5s, then notes it and closes replaced.
+function adopt(cx, before, mod, tab, value, name, folder, replaced, tries = 0) {
+  const added = panes().find(p => p.mod === mod && (!tab || p.tab === tab) && !before.some(q => q.pane === p.pane));
+  if (added) {
+    if (replaced) run("pane.close", { pane: replaced });
+    return remember(added.pane, mod, value, name, folder);
+  }
+  if (tries < 100) cx.timer.after(50, cx => adopt(cx, before, mod, tab, value, name, folder, replaced, tries + 1));
+}
+// Notes what a preview pane shows. Entries of closed panes go as new ones come.
+function remember(pane, mod, value, name, folder) {
   const live = new Set(panes().map(p => p.pane));
   const keep = (map) => Object.fromEntries(Object.entries(map ?? {}).filter(([p]) => live.has(p)));
-  setShared(PREVIEWS, { ...keep(mine), [added.pane]: { file, on } });
-  setShared("leddt.pane-titles", { ...keep(shared("leddt.pane-titles")), [added.pane]: name });
-  setShared("leddt.pane-folders", { ...keep(shared("leddt.pane-folders")), [added.pane]: folder });
+  for (const m of PREVIEW_MODS) if (m !== mod) setShared(`${m}.panes`, keep(shared(`${m}.panes`)));
+  setShared(`${mod}.panes`, { ...keep(shared(`${mod}.panes`)), [pane]: value });
+  setShared("leddt.pane-titles", { ...keep(shared("leddt.pane-titles")), [pane]: name });
+  setShared("leddt.pane-folders", { ...keep(shared("leddt.pane-folders")), [pane]: folder });
 }
 
 function location() {
@@ -224,9 +313,10 @@ export default class Files extends View {
   }
 
   show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
+    this.code?.release(); this.code = null; this.image = null; this.file = path; this.fileError = null;
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on;
+    if (isImage(path) && !on) { this.imageWant = null; return this.loadImage(cx); }
     cx.spawn(async cx => {
       try {
         const text = await readTextFile(`${root}/${path}`, { on });
@@ -239,6 +329,27 @@ export default class Files extends View {
           font_family: settings().font_family, font_size: 12,
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
       } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
+      finally { cx.notify(); }
+    });
+  }
+
+  // The shown image's copy. An SVG waits for the view's size and is drawn at twice it.
+  loadImage(cx) {
+    const path = this.file, context = this.context, a = this.imageArea, svg = /\.svg$/i.test(path ?? "");
+    if (!path || (svg && !a)) return;
+    const W = svg ? Math.max(1, Math.round(a.width * 2)) : 0, H = svg ? Math.max(1, Math.round(a.height * 2)) : 0;
+    const want = `${path}|${W}x${H}`;
+    if (want === this.imageWant) return;
+    this.imageWant = want;
+    cx.spawn(async cx => {
+      try {
+        const file = `${this.root}/${path}`, key = hash(file), ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? "img";
+        const text = svg ? await readTextFile(file) : null;
+        if (svg && text === null) throw new Error("this file is no longer available");
+        const src = await imageCopy(key, file, ext, text, W, H);
+        if (this.imageWant === want && this.current(context)) this.image = src;
+      }
+      catch (e) { if (this.imageWant === want && this.current(context)) this.fileError = `Cannot read this image: ${e.message ?? e}`; }
       finally { cx.notify(); }
     });
   }
@@ -263,8 +374,12 @@ export default class Files extends View {
   previewButton(id, path, t) {
     return div().id(id).flex_none().p(3).rounded(5)
       .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
-      .tooltip("Preview (Shift: in a new tab)")
-      .on_click((e, cx) => { cx.stop_propagation(); previewMarkdown(`${this.root}/${path}`, this.on, this.root, !!e.modifiers?.shift); })
+      .tooltip("Preview (Ctrl: in a new pane, Shift: in a new tab)")
+      .on_click((e, cx) => {
+        cx.stop_propagation();
+        const m = e.modifiers ?? {};
+        preview(`${this.root}/${path}`, this.on, this.root, m.shift ? "tab" : m.control || m.platform ? "pane" : "reuse", cx);
+      })
       .child(svg("mods/leddt-files/eye.svg").size(14));
   }
 
@@ -284,7 +399,7 @@ export default class Files extends View {
         .child(entry.dir ? svg(`mods/leddt-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/leddt-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
-        .when(this.hovered === path && !entry.dir && isMarkdown(entry.name), el => el.child(this.previewButton(`file-preview-${path}`, path, t)))
+        .when(this.hovered === path && !entry.dir && previewer(entry.name, this.on), el => el.child(this.previewButton(`file-preview-${path}`, path, t)))
         .when(Boolean(app), el => el.child(div().id(`file-open-${path}`).flex_none().p(3).rounded(5)
           .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.background).text_color(t.foreground))
           .tooltip(`Open with ${app.name}`)
@@ -343,13 +458,21 @@ export default class Files extends View {
         .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""))
-        .when(Boolean(this.file) && isMarkdown(this.file ?? ""), el => el.child(this.previewButton("files-preview", this.file, t)))
+        .when(Boolean(this.file) && previewer(this.file ?? "", this.on), el => el.child(this.previewButton("files-preview", this.file, t)))
         .when(Boolean(this.root) && !this.on, el => el.child(div().id("files-zed").flex_none().px(8).py(2).rounded(6).border_1().border_color(t.border)
           .text_size(12).text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => { openInZed(this.root); }).child("Open in Zed"))))
       .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
-      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0)
+        : isImage(this.file ?? "") && !this.on && !this.fileError ? div().id("files-image").flex_1().min_h(0).m(12)
+            .on_size_change((size, cx) => {
+              const next = { width: Math.round(size.width), height: Math.round(size.height) };
+              if (next.width === this.imageArea?.width && next.height === this.imageArea?.height) return;
+              this.imageArea = next; this.loadImage(cx);
+            })
+            .child(this.image ? image(this.image).size_full() : div().text_color(t.dim).child("Loading image…"))
+        : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
   }
 }

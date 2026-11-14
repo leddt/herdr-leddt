@@ -1,8 +1,11 @@
 // A pane that renders a markdown file (props: { file (absolute), on }), opened from leddt-files.
 // It follows the file as it changes, and a link to another .md file opens it here (← goes back).
+// leddt-files reuses it for another file: leddt-preview.show { [props.id]: { file, on, at } }.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
-import { props, readTextFile, watchFolder, exec, theme, window, notify } from "herdr";
+import { props, readTextFile, watchFolder, exec, theme, window, notify, shared } from "herdr";
+
+const SHOW = "leddt-preview.show";
 
 const MAX = 400000;
 const dirname = (p) => p.replace(/[\\/][^\\/]*$/, "");
@@ -28,10 +31,22 @@ export default class Markdown extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.on = p.on ?? null;
+    this.id = p.id ?? null;
+    this.handledAt = this.id ? shared(SHOW)?.[this.id]?.at ?? null : null;
     this.history = [];
     this.open(p.file ?? null, cx);
     // A remote file can't be watched: read it again now and then.
-    if (this.on) cx.timer.every(5000, cx => this.load(cx));
+    cx.timer.every(5000, cx => { if (this.on) this.load(cx); });
+  }
+
+  // A file sent by leddt-files to this pane: fresh, and once (the value persists).
+  showRequested(cx) {
+    const req = this.id ? shared(SHOW)?.[this.id] : null;
+    if (!req || req.at === this.handledAt) return;
+    this.handledAt = req.at;
+    if (Date.now() - req.at >= 10000 || !req.file) return;
+    this.on = req.on ?? null; this.history = [];
+    this.open(req.file, cx);
   }
 
   open(file, cx) {
@@ -80,7 +95,8 @@ export default class Markdown extends View {
     else if (!this.on) openExternal(target);
   }
 
-  render() {
+  render(cx) {
+    this.showRequested(cx);
     const t = theme();
     return v_flex().id("markdown").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(14)
       .when(this.history.length > 0, el => el.child(h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
