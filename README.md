@@ -48,7 +48,7 @@ A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one i
 
 ### `leddt-pane` (from `pane`)
 
-- **CPU and memory** at the right of the header (before the context chip), for every terminal on this machine: the CPU % and memory of the terminal's process and all its descendants (the shell, the program it runs, that program's children). The CPU is a share of one core, averaged since the last reading, so it can go above 100%, and it's brighter from 50%; the tooltip adds the share of the whole machine and the number of processes. `stats.js` (new) reads the process table once every 5s for all headers (`Get-CimInstance Win32_Process` on Windows, about 0.4s of one core each time; `ps` elsewhere), and only while a pane's tab is on screen. The CPU shows from the second reading.
+- **CPU and memory** at the right of the header (before the context chip), for every terminal on this machine: the CPU % and memory of the terminal's process and all its descendants (the shell, the program it runs, that program's children). The CPU is a share of one core, averaged since the last reading, so it can go above 100%, and it's brighter from 50%; the tooltip adds the share of the whole machine and the number of processes. `stats.js` (new) reads the process table once every 5s for all headers (`Get-CimInstance Win32_Process` on Windows, about 0.4s of one core each time; `ps` elsewhere), and only while a pane's tab is on screen. The CPU shows from the second reading. Click it to open the `leddt-procs` popover with the breakdown by process.
 
 These only show for panes running Claude Code:
 
@@ -99,6 +99,15 @@ The popover that opens from the context chip in `leddt-pane`. It has two modes, 
 
 - **Simple:** the latest usage from the transcript: total, window, and what the last step added.
 - **Detailed:** runs Claude Code's own `/context` on a forked, unsaved copy of the session (no API call, about 1s) and shows the breakdown by category.
+
+### `leddt-procs`
+
+The popover that opens from the CPU/memory chip in `leddt-pane`: every process in the terminal (its root process and all its descendants), each with its CPU (% of one core) and memory, plus the totals. It reads every 2s while it's open, and the first CPU numbers show after under a second. Hover a row to see its pid and full command line. It has two views, and it remembers which one you used last (`leddt-procs.view`):
+
+- **Tree:** parents above their children, indented.
+- **By CPU:** a flat list, busiest first.
+
+On Linux it reads `/proc/<pid>/stat`, which gives CPU time in clock ticks (`ps` only gives whole seconds, which is too coarse at 2s), and `ps` for the command lines. It uses `ps` on macOS and `Get-CimInstance Win32_Process` on Windows.
 
 ### `leddt-branches`
 

@@ -107,7 +107,7 @@ export default class Pane extends View {
     });
   }
 
-  statsChip(t, terminal) {
+  statsChip(t, terminal, name) {
     const s = this.stats;
     // Not the numbers from before its tab was hidden.
     if (!s || Date.now() - this.statsAt > INTERVAL * 3) return null;
@@ -120,11 +120,21 @@ export default class Pane extends View {
     return h_flex()
       .id(`ph-stats-${terminal}`)
       .flex_none()
+      .h(20)
+      .px(6)
       .gap(6)
       .items_center()
+      .rounded(5)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
       .text_size(11)
       .text_color(t.dim)
-      .tooltip(tip)
+      .tooltip(`${tip} (click: by process)`)
+      // Per-process breakdown (leddt-procs).
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        openOverlay({ mod: "leddt-procs", kind: "popup", width: 460, props: { terminal, name } });
+      })
       .when(cpu !== null, (el) => el.child(div().text_color(cpu >= 50 ? t.foreground : t.dim).child(`${cpu}%`)))
       .child(div().child(fmtBytes(s.rss)));
   }
@@ -264,7 +274,7 @@ export default class Pane extends View {
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
         .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })))
       // Last, at the right edge: the hover buttons appear to their left, so they never move.
-      .when(Boolean(p.terminal && !machine), (el) => { const chip = this.statsChip(t, p.terminal); return chip ? el.child(chip) : el; })
+      .when(Boolean(p.terminal && !machine), (el) => { const chip = this.statsChip(t, p.terminal, name); return chip ? el.child(chip) : el; })
       .when(Boolean(isClaude), (el) => { const chip = this.contextChip(t, p.terminal); return chip ? el.child(chip) : el; });
   }
 }
