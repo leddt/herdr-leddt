@@ -3,10 +3,11 @@
 // made again when the file changes. An SVG's copy is the same text with its width and height
 // set to twice the shown size, so GPUI draws it sharp at any zoom. Works on Linux, macOS, Windows.
 // Zoom bar from compagnons-forge's graph view; drag or wheel to move, Ctrl+wheel to zoom.
+// The button left of it puts a checkerboard, white or gray behind the image (its transparency).
 // leddt-files reuses it for another image: leddt-preview.show { [props.id]: { file, at } }.
-import { View, div, image } from "gpui-kit";
+import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, exec, appHome, watchFolder, readTextFile, writeTextFile, window, theme, shared } from "herdr";
+import { props, exec, appHome, watchFolder, readTextFile, writeTextFile, window as appWindow, theme, shared } from "herdr";
 
 const ZOOMS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3, 4, 6, 8];
 const MIN = 0.01, MAX = 8, PAD = 16;
@@ -15,6 +16,20 @@ const DENSITY = 2, MAX_PX = 8192;
 const dirname = (p) => p.replace(/[\\/][^\\/]*$/, "");
 const isSvg = (p) => /\.svg$/i.test(p);
 const SHOW = "leddt-preview.show";
+// What's drawn behind the image, to see its transparency; the button cycles through them.
+const BACKDROPS = [
+  { key: "checker", tip: "Checkerboard behind the image" },
+  { key: "white", tip: "White behind the image", color: "#ffffff" },
+  { key: "gray", tip: "Gray behind the image", color: "#808080" },
+];
+const CHECKER = { base: "#ffffff", square: "#cccccc", size: 8 };
+const BACKDROP_KEY = "leddt-image.backdrop";
+const RECT = () => PathBuilder.fill().move_to("0%", "0%").line_to("100%", "0%").line_to("100%", "100%").line_to("0%", "100%").close().build();
+// A layer filling its (relative) parent with the checkerboard.
+const checker = (size = CHECKER.size) => window.paint_path(RECT(), Background.checkerboard(CHECKER.square, size)).absolute().top(0).left(0).size_full();
+// The backdrop last chosen in this run of the app (any pane), checkerboard by default.
+const savedBackdrop = () => { try { return window.sessionStorage.getItem(BACKDROP_KEY); } catch { return null; } };
+const saveBackdrop = (key) => { try { window.sessionStorage.setItem(BACKDROP_KEY, key); } catch {} };
 
 // ----- copies (the same code is in leddt-files)
 const COPIES = "data/leddt-image";
@@ -24,7 +39,7 @@ const psQuote = (s) => "'" + s.replace(/['‘’‚‛]/g, "$&$&") + "'";
 // Deletes the copies named <key>-* and any made over a day ago, then copies file there as name.
 async function prepare(key, file, name) {
   const dir = `${appHome()}/${COPIES}`;
-  const r = window()?.platform === "windows"
+  const r = appWindow()?.platform === "windows"
     ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command",
         `$d = ${psQuote(dir.replace(/\//g, "\\"))}; New-Item -ItemType Directory -Force -Path $d | Out-Null; `
         + `Get-ChildItem -LiteralPath $d -File | Where-Object { $_.CreationTime -lt (Get-Date).AddDays(-1) -or $_.Name.StartsWith(${psQuote(key + "-")}) } | Remove-Item -Force -ErrorAction SilentlyContinue; `
@@ -71,6 +86,7 @@ export default class Image extends View {
     this.id = props()?.id ?? null;
     this.handledAt = this.id ? shared(SHOW)?.[this.id]?.at ?? null : null;
     this.version = 0;
+    this.backdrop = Math.max(0, BACKDROPS.findIndex((b) => b.key === savedBackdrop()));
     this.open(props()?.file ?? null, cx);
   }
 
@@ -199,8 +215,17 @@ export default class Image extends View {
       .child(zoomBtn("zoom-reset", `${Math.round(z * 100)}%`, "Back to 100%", Math.abs(z - 1) > 0.001, () => this.setZoom(1)))
       .child(zoomBtn("zoom-in", "+", "Zoom in", z < MAX - 0.001, () => this.setZoom(ZOOMS.find((v) => v > z + 0.001) ?? MAX)))
       .child(zoomBtn("zoom-fit", "Fit", "Fit the image to the pane", fit != null && !this.fitMode, () => { this.fitMode = true; this.pan = { x: 0, y: 0 }; }));
+    const backdrop = BACKDROPS[this.backdrop], nextBackdrop = BACKDROPS[(this.backdrop + 1) % BACKDROPS.length];
+    const swatch = div().relative().overflow_hidden().size(12).rounded(2).border(1).border_color(t.border)
+      .when(Boolean(backdrop.color), (el) => el.bg(backdrop.color))
+      .when(!backdrop.color, (el) => el.bg(CHECKER.base).child(checker(3)));
+    const backdropBtn = div().id("backdrop").flex_none().size(24).flex().items_center().justify_center().rounded(6).border(1).border_color(t.border)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${backdrop.tip} (click: ${nextBackdrop.key})`)
+      .on_click((_e, cx) => { this.backdrop = (this.backdrop + 1) % BACKDROPS.length; saveBackdrop(BACKDROPS[this.backdrop].key); cx.notify(); })
+      .child(swatch);
     const header = h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(11)
       .child(div().flex_1().min_w(0).truncate().child(`${Math.round(w)} × ${Math.round(h)}${this.svg ? " · SVG" : ""}`))
+      .child(backdropBtn)
       .child(zoomBar);
 
     // The viewport: the image moved by this.pan (a drag or the wheel), centered when smaller.
@@ -246,7 +271,9 @@ export default class Image extends View {
       })
       .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = null; cx.notify(); } })
       .on_hover((hov, cx) => { if (!hov && this.drag) { this.drag = null; cx.notify(); } })
-      .when(Boolean(this.src), (el) => el.child(image(this.src).absolute().left(left).top(top).w(cw).h(ch)))
+      .when(Boolean(this.src), (el) => el
+        .child(div().absolute().left(left).top(top).w(cw).h(ch).bg(backdrop.color ?? CHECKER.base).when(!backdrop.color, (d) => d.child(checker())))
+        .child(image(this.src).absolute().left(left).top(top).w(cw).h(ch)))
       .when(!this.src, (el) => el.child(div().p(16).child(this.error || "Loading…")))
       .children([bar(true, ch, vh, this.pan.y), bar(false, cw, vw, this.pan.x)].filter(Boolean));
     return root.child(header).child(view);
