@@ -8,7 +8,7 @@ import { ACTIONS, FALLBACK_AGENT, installedAgents, visibleAgents, writePrompt } 
 
 // Open issues, and the ones closed in the last 7 days.
 const JQL = "assignee = currentUser() AND (statusCategory != Done OR statusCategoryChangedDate >= -7d) ORDER BY updated DESC";
-const FIELDS = "summary,status,project,issuetype,updated,parent";
+const FIELDS = "summary,status,project,issuetype,updated,parent,labels";
 const PAGES = 5; // 100 issues per page
 // How many levels above an issue are looked up (sub-task > task > epic > initiative…).
 const ANCESTOR_LEVELS = 4;
@@ -53,6 +53,7 @@ async function search() {
     project: { key: i.project?.key ?? "?", name: i.project?.name ?? "?" },
     updated: i.updated ? Date.parse(i.updated) : 0,
     parent: i.parent?.key ?? null,
+    labels: i.labels ?? i.fields?.labels ?? [],
   }));
   // Without its ancestors an issue still shows: their lookup failing leaves the chain short.
   let known = new Map();
@@ -570,7 +571,14 @@ export default class Jira extends View {
       .child(link(`key-${i.key}`, i, true));
   }
 
-  // The status is the sub-group's header, so the row shows type and key only.
+  // The issue's labels, on a third line that wraps when they don't fit.
+  labels(t, i) {
+    return h_flex().flex_wrap().gap(4).items_center()
+      .children(i.labels.map(l => div().flex_none().px(6).h(15).flex().items_center().rounded(4).text_size(10)
+        .bg(t.raised).text_color(t.muted).child(l)));
+  }
+
+  // The status is the sub-group's header, so the row shows type and key only; labels, if any, below.
   // On hover, the status button shows at the right of the first line, and the agent
   // buttons at the right of the second.
   row(t, i) {
@@ -596,7 +604,8 @@ export default class Jira extends View {
           .child(div().flex_1())
           .when(this.sending === i.key, el => el.child(
             svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
-          .when(active && this.sending !== i.key, el => el.children(ACTIONS.map(a => this.agentButton(t, i, a, target))))))
+          .when(active && this.sending !== i.key, el => el.children(ACTIONS.map(a => this.agentButton(t, i, a, target)))))
+        .when(i.labels.length > 0, el => el.child(this.labels(t, i))))
       .when(this.picking?.key === i.key, el => el.child(this.picker(t, i)))
       .when(this.statusMenu?.key === i.key, el => el.child(this.statusPicker(t, i)));
   }
