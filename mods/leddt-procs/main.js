@@ -76,8 +76,9 @@ async function readPs() {
 
 const WINDOWS = "'cores ' + $env:NUMBER_OF_PROCESSORS; "
   + "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,WorkingSetSize,KernelModeTime,UserModeTime,Name,CommandLine,CreationDate | "
-  + "ForEach-Object { '{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}' -f $_.ProcessId, $_.ParentProcessId, $_.WorkingSetSize, "
-  + "(($_.KernelModeTime + $_.UserModeTime) / 1e7), $_.Name, $_.CreationDate.Ticks, $_.CommandLine }";
+  // [char]9: a tab ("`t" is literal in the single quotes the -f format would need).
+  + "ForEach-Object { ($_.ProcessId, $_.ParentProcessId, $_.WorkingSetSize, "
+  + "(($_.KernelModeTime + $_.UserModeTime) / 1e7), $_.Name, $_.CreationDate.Ticks, ($_.CommandLine -replace '\\s+', ' ')) -join [char]9 }";
 
 async function readWindows(s) {
   const r = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS], { timeout: 15000 });
