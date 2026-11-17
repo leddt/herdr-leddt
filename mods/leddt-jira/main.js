@@ -202,6 +202,9 @@ export default class Jira extends View {
       try { this.hidden[kind] = new Set(JSON.parse(localStorage.getItem(FILTERS[kind].storage) ?? "[]")); }
       catch { this.hidden[kind] = new Set(); }
     }
+    // The filter bars show only when the person opens them with the funnel; closed by default.
+    try { this.showFilters = localStorage.getItem("showFilters") === "1"; }
+    catch { this.showFilters = false; }
     this.refresh(cx);
     cx.timer.every(120000, cx => this.refresh(cx));
   }
@@ -348,7 +351,19 @@ export default class Jira extends View {
         .cursor_pointer().hover(s => s.underline())
         .tooltip("Réafficher tous les statuts et types, et revenir à l'ordre automatique des statuts")
         .on_click((_e, cx) => { this.resetFilters(); cx.notify(); })
-        .child("Reset filters")))
+        .child("reset")))
+      // The funnel opens or closes the filter bars; accent while something is filtered.
+      .child(div().id("toggle-filters").size(24).flex().items_center().justify_center().rounded(6)
+        .text_color(this.filtered() ? t.accent : this.showFilters ? t.foreground : t.dim)
+        .when(this.showFilters, el => el.bg(t.selected))
+        .hover(s => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(this.showFilters ? "Masquer les filtres" : "Afficher les filtres")
+        .on_click((_e, cx) => {
+          this.showFilters = !this.showFilters;
+          localStorage.setItem("showFilters", this.showFilters ? "1" : "0");
+          cx.notify();
+        })
+        .child(svg("mods/leddt-jira/filter.svg").size(13)))
       .child(div().id("refresh").size(24).flex().items_center().justify_center().rounded(6).text_color(t.dim)
         .hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("Rafraîchir")
         .on_click((_e, cx) => this.refresh(cx))
@@ -654,7 +669,7 @@ export default class Jira extends View {
         : visible.length === 0
           ? empty("Aucune tâche avec les filtres choisis.")
           : v_flex().pb(8).children(groups(visible, this.statusOrder).map(g => this.group(t, g)));
-    const bars = Object.keys(FILTERS).map(kind => this.filterBar(t, kind)).filter(Boolean);
+    const bars = !this.showFilters ? [] : Object.keys(FILTERS).map(kind => this.filterBar(t, kind)).filter(Boolean);
     // A status drag released off the chips, or leaving the panel, is cancelled.
     const cancelDrag = cx => { if (this.drag) { this.drag = this.dragOver = this.ghost = null; cx.notify(); } };
     const g = this.ghost;
