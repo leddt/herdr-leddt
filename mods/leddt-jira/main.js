@@ -8,7 +8,9 @@ import { ACTIONS, FALLBACK_AGENT, installedAgents, visibleAgents, writePrompt } 
 
 // Open issues, and the ones closed in the last 7 days.
 const JQL = "assignee = currentUser() AND (statusCategory != Done OR statusCategoryChangedDate >= -7d) ORDER BY updated DESC";
-const FIELDS = "summary,status,project,issuetype,updated,parent,labels";
+// customfield_10021 is Jira's "Flagged" field (set to [Impediment] when flagged).
+const FLAG_FIELD = "customfield_10021";
+const FIELDS = `summary,status,project,issuetype,updated,parent,labels,${FLAG_FIELD}`;
 const PAGES = 5; // 100 issues per page
 // How many levels above an issue are looked up (sub-task > task > epic > initiative…).
 const ANCESTOR_LEVELS = 4;
@@ -54,6 +56,7 @@ async function search() {
     updated: i.updated ? Date.parse(i.updated) : 0,
     parent: i.parent?.key ?? null,
     labels: i.labels ?? i.fields?.labels ?? [],
+    flagged: (i[FLAG_FIELD] ?? i.fields?.[FLAG_FIELD] ?? []).length > 0,
   }));
   // Without its ancestors an issue still shows: their lookup failing leaves the chain short.
   let known = new Map();
@@ -579,6 +582,7 @@ export default class Jira extends View {
   }
 
   // The status is the sub-group's header, so the row shows type and key only; labels, if any, below.
+  // A flagged issue (impediment) has a red flag before its title.
   // On hover, the status button shows at the right of the first line, and the agent
   // buttons at the right of the second.
   row(t, i) {
@@ -593,6 +597,8 @@ export default class Jira extends View {
         })
         .on_click((_e, cx) => { if (i.url) cx.open_url(i.url); })
         .child(h_flex().gap(6).items_center()
+          .when(i.flagged, el => el.child(div().id(`flag-${i.key}`).flex_none().tooltip("Flag : Impediment")
+            .child(svg("mods/leddt-jira/flag.svg").size(12).text_color(t.ansi1))))
           .child(div().flex_1().min_w(0).text_size(12.5).text_color(t.foreground).truncate().child(i.summary))
           .when(this.moving === i.key, el => el.child(
             svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
