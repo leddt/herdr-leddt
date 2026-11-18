@@ -19,6 +19,36 @@ function resolve(dir, rel) {
   }
   return out.join("/");
 }
+// A YAML frontmatter block becomes a key/value table, its values shown as written (plain text, one line per line).
+// A frontmatter it can't read (a line that isn't "key: value" nor indented under a key) is left as is.
+// Every ASCII punctuation is escaped so a value never turns into markdown (__tests__ stays as is).
+const plain = (s) => s.replace(/[!-\/:-@\[-`{-~]/g, "\\$&");
+// Returns { table, body }, table being null when there's no frontmatter it can read.
+function frontmatter(text) {
+  const none = { table: null, body: text };
+  const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(text);
+  if (!m) return none;
+  const rows = [];
+  for (const line of m[1].split(/\r?\n/)) {
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const top = /^([^\s#:][^:]*?):(?:[ \t]+(.*))?$/.exec(line);
+    if (top) { rows.push({ key: top[1].trim(), lines: top[2]?.trim() ? [top[2].trim()] : [] }); continue; }
+    if (!rows.length || !/^\s/.test(line)) return none;
+    rows.at(-1).lines.push(line.replace(/\s+$/, ""));
+  }
+  if (!rows.length) return none;
+  // Lines under a key keep their indentation relative to each other.
+  const value = ({ lines }) => {
+    const nested = lines.filter(l => /^\s/.test(l));
+    const indent = Math.min(...nested.map(l => l.match(/^\s*/)[0].length));
+    return lines.map(l => /^\s/.test(l)
+      ? "&nbsp;".repeat(l.match(/^\s*/)[0].length - indent) + plain(l.trim())
+      : plain(l)).join("<br>");
+  };
+  const table = ["| Key | Value |", "| --- | --- |", ...rows.map(r => `| ${plain(r.key)} | ${value(r)} |`)];
+  return { table: table.join("\n"), body: text.slice(m[0].length) };
+}
+
 function openExternal(url) {
   const platform = window()?.platform;
   const r = platform === "windows" ? exec("powershell", ["-NoProfile", "-Command", "Start-Process", url])
@@ -50,7 +80,7 @@ export default class Markdown extends View {
   }
 
   open(file, cx) {
-    this.file = file; this.text = null; this.error = file ? null : "No file";
+    this.file = file; this.text = null; this.error = file ? null : "No file"; this.fmOpen = false;
     this.load(cx);
     this.watch(cx);
   }
@@ -63,7 +93,10 @@ export default class Markdown extends View {
         const text = await readTextFile(file, { on: this.on });
         if (this.file !== file) return;
         if (text === null) { this.error = "This file is no longer available"; return; }
-        if (text !== this.text) { this.text = text.length > MAX ? text.slice(0, MAX) + "\n\n… (file truncated)" : text; this.error = null; }
+        if (text !== this.text) {
+          this.text = text; this.error = null;
+          this.shown = frontmatter(text.length > MAX ? text.slice(0, MAX) + "\n\n… (file truncated)" : text);
+        }
       } catch (e) { if (this.file === file) this.error = `Cannot read this file: ${e}`; }
       finally { cx.notify(); }
     });
@@ -105,7 +138,14 @@ export default class Markdown extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(basename(this.file ?? "")))))
       .child(this.text !== null
         ? div().id("md-scroll").flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16)
-            .child(TextView.markdown(`md-${this.file}`, this.text).selectable(true).on_link_click((url, cx) => this.link(url, cx)))
+            .when(!!this.shown.table, el => el.child(v_flex().mb(16).border(1).border_color(t.border).rounded(6)
+              .child(h_flex().id("md-fm").h(28).px(10).gap(6).items_center().cursor_pointer().text_size(12).text_color(t.muted)
+                .hover(s => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => { this.fmOpen = !this.fmOpen; cx.notify(); })
+                .child(this.fmOpen ? "▾" : "▸").child("Frontmatter"))
+              .when(this.fmOpen, el => el.child(div().px(10).pb(10).border_t(1).border_color(t.border).pt(10)
+                .child(TextView.markdown(`md-fm-${this.file}`, this.shown.table).selectable(true))))))
+            .child(TextView.markdown(`md-${this.file}`, this.shown.body).selectable(true).on_link_click((url, cx) => this.link(url, cx)))
         : div().p(16).text_size(12).text_color(t.dim).child(this.error || "Loading…"));
   }
 }
