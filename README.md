@@ -23,8 +23,9 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Right panel, Jira (`jira`) | — | **new** `leddt-jira` block in the `panel-body` stack |
 | Under the panes, above the status bar | — | **new** `leddt-command` block (`command`, 32px) |
 | Status bar | `status` block | `status-row`: a **new** `leddt-usage` block (370px) at the left, then `workspace-status` |
+| Sidebar footer (`sidebar-footer`) | `workspace-chrome` | `leddt-chrome` |
 
-Everything else (`workspace-chrome`, `workspace-status`) is still the shipped mod.
+Everything else (`workspace-chrome` for the brand row, `workspace-status`) is still the shipped mod.
 
 A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" button and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. A mod pane can also name its own folder in the shared value `leddt.pane-folders` (`{ [pane]: folder }`), which comes before its tab's terminal. Herdr's own tab creation (the terminal and agent buttons, the ⋯ menu, shortcuts) still starts in the space's folder.
 
@@ -85,7 +86,11 @@ The header also names a `leddt-review` pane "Review" instead of the mod's name, 
 
 - **Icon items** in a space's menu, opened only from `leddt-spaces`: **Choose icon…**, plus **Use project icon** and **Use letter avatar** when they would change something. They have their own `image.svg` icon. Tab and terminal menus still use the shipped `menu`.
 
-The icon paths in the four clones that have their own icons point at their own folder instead of the shipped mod's.
+### `leddt-chrome` (from `workspace-chrome`)
+
+- **Keyboard shortcuts button** in the sidebar footer, right of Settings: a keyboard icon that opens Herdr's shortcuts overlay (`app.help`). Its tooltip shows the key bound to it in `keys.json` (Ctrl+? here). It's hidden when the sidebar is the narrow rail, which has no room for it; the key still works. Its `keyboard.svg` is in the mod's folder. Only the footer block uses this clone; the brand row stays on the shipped mod.
+
+The icon paths in the five clones that have their own icons point at their own folder instead of the shipped mod's.
 
 ## New mods
 
