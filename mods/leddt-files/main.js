@@ -2,24 +2,11 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, shared, setShared, notify, appHome, run } from "herdr";
+import { isImage, previewer, preview } from "./preview.js";
 
 // Set by leddt-changes (double-click on a changed file): { path (absolute), on, at }.
 const OPEN_IN_FILES = "leddt-files.open";
 
-// Previews: a leddt-markdown or leddt-image pane in the shown tab. A click reuses the
-// latest one (focused as is when it already shows the file); Ctrl+click splits a new one
-// beside the focused pane, Shift+click opens one in a new tab named after the file.
-// <mod>.panes ({ [pane]: { file, on, id, at } }) finds them again: id (also in its props)
-// addresses it, at is when it was last given a file. A pane of the same mod is sent the
-// file (leddt-preview.show { [id]: { file, on, at } }); one of the other mod, or from before
-// ids, is replaced by a new pane where it is. Each pane is named after its file
-// (leddt.pane-titles) and keeps Files on this folder (leddt.pane-folders).
-const isMarkdown = (name) => /\.(md|markdown|mdx)$/i.test(name);
-const isImage = (name) => /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif)$/i.test(name);
-// The mod that previews a file, or null. Images are read from disk by path: local only.
-const previewer = (name, on) => isMarkdown(name) ? "leddt-markdown" : isImage(name) && !on ? "leddt-image" : null;
-const PREVIEW_MODS = ["leddt-markdown", "leddt-image"];
-const SHOW = "leddt-preview.show";
 // Images: image() only reads under the app folder, so one is shown from a copy in
 // data/leddt-image/. An SVG's copy is drawn at the shown size, so it's sharp.
 // The same code as leddt-image's (Linux, macOS, Windows).
@@ -67,60 +54,6 @@ async function imageCopy(key, file, ext, svgText, W, H) {
     await writeTextFile(`${appHome()}/${COPIES}/${name}`, svgSized(svgText, W, H), null);
   } else await prepare(key, file, name);
   return `${COPIES}/${name}`;
-}
-// mode: "reuse" (a click), "pane" (Ctrl), "tab" (Shift).
-function preview(file, on, folder, mode, cx) {
-  const mod = previewer(file, on);
-  const f = focused(), all = panes(), name = file.split(/[\\/]/).pop();
-  if (!mod || !f?.tab) return;
-  on = on ?? null;
-  const tab = all.filter(p => p.tab === f.tab), entry = (p) => shared(`${p.mod}.panes`)?.[p.pane];
-  // Untracked ones (opened before ids) count as the oldest, and are replaced.
-  const previews = tab.filter(p => PREVIEW_MODS.includes(p.mod)).sort((a, b) => (entry(b)?.at ?? 0) - (entry(a)?.at ?? 0));
-  const id = Math.random().toString(36).slice(2), at = Date.now(), value = { file, on, id, at };
-  if (mode === "reuse") {
-    const same = previews.find(p => p.mod === mod && entry(p)?.file === file && (entry(p)?.on ?? null) === on);
-    if (same) { remember(same.pane, mod, { ...entry(same), at }, name, folder); return run("pane.focus", { pane: same.pane }); }
-    const last = previews[0];
-    if (last?.mod === mod && entry(last)?.id) {
-      // Requests a minute old are done with.
-      const pending = Object.fromEntries(Object.entries(shared(SHOW) ?? {}).filter(([, r]) => at - (r?.at ?? 0) < 60000));
-      setShared(SHOW, { ...pending, [entry(last).id]: { file, on, at } });
-      remember(last.pane, mod, { ...value, id: entry(last).id }, name, folder);
-      return run("pane.focus", { pane: last.pane });
-    }
-    if (last) {
-      // The other kind, or untracked: a new pane where it is, and then it goes.
-      run("pane.split", { direction: "right", pane: last.pane, mod, props: { file, on, id } });
-      return adopt(cx, all, mod, f.tab, value, name, folder, last.pane);
-    }
-  }
-  if (mode === "tab") run("tab.new", { name, space: f.space, mod, props: { file, on, id } });
-  else {
-    const beside = tab.find(p => p.pane === f.pane) ?? tab[0];
-    if (!beside) return;
-    run("pane.split", { direction: "right", pane: beside.pane, mod, props: { file, on, id } });
-  }
-  adopt(cx, all, mod, mode === "tab" ? null : f.tab, value, name, folder, null);
-}
-// A pane opened by a command shows up in panes() a little later: looks for it (a pane of
-// mod, in tab when given, that wasn't in before) for up to 5s, then notes it and closes replaced.
-function adopt(cx, before, mod, tab, value, name, folder, replaced, tries = 0) {
-  const added = panes().find(p => p.mod === mod && (!tab || p.tab === tab) && !before.some(q => q.pane === p.pane));
-  if (added) {
-    if (replaced) run("pane.close", { pane: replaced });
-    return remember(added.pane, mod, value, name, folder);
-  }
-  if (tries < 100) cx.timer.after(50, cx => adopt(cx, before, mod, tab, value, name, folder, replaced, tries + 1));
-}
-// Notes what a preview pane shows. Entries of closed panes go as new ones come.
-function remember(pane, mod, value, name, folder) {
-  const live = new Set(panes().map(p => p.pane));
-  const keep = (map) => Object.fromEntries(Object.entries(map ?? {}).filter(([p]) => live.has(p)));
-  for (const m of PREVIEW_MODS) if (m !== mod) setShared(`${m}.panes`, keep(shared(`${m}.panes`)));
-  setShared(`${mod}.panes`, { ...keep(shared(`${mod}.panes`)), [pane]: value });
-  setShared("leddt.pane-titles", { ...keep(shared("leddt.pane-titles")), [pane]: name });
-  setShared("leddt.pane-folders", { ...keep(shared("leddt.pane-folders")), [pane]: folder });
 }
 
 function location() {
@@ -377,7 +310,8 @@ export default class Files extends View {
       .on_click((e, cx) => {
         cx.stop_propagation();
         const m = e.modifiers ?? {};
-        preview(`${this.root}/${path}`, this.on, this.root, m.shift ? "tab" : m.control || m.platform ? "pane" : "reuse", cx);
+        const file = `${this.root}/${path}`, on = this.on, folder = this.root, mode = m.shift ? "tab" : m.control || m.platform ? "pane" : "reuse";
+        cx.spawn(async (cx) => preview(file, on, folder, mode, (ms) => cx.sleep(ms)));
       })
       .child(svg("mods/leddt-files/eye.svg").size(14));
   }

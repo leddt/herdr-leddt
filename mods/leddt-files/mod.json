@@ -3,5 +3,8 @@
   "cloned_from": {
     "name": "files",
     "version": "0.1.13"
-  }
+  },
+  "link_handlers": [
+    { "kind": "file", "pattern": "(?i)\\.(md|markdown|mdx|png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif)$" }
+  ]
 }
