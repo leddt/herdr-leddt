@@ -25,6 +25,8 @@ A clone of the shipped `main` layout. Its structure, sizes and look are unchange
 | Status bar | `status` block | `status-row`: a **new** `leddt-usage` block (370px) at the left, then `workspace-status` |
 | Sidebar footer (`sidebar-footer`) | `workspace-chrome` | `leddt-chrome` |
 
+The root also has a 1px `border` border around the whole window.
+
 Everything else (`workspace-chrome` for the brand row, `workspace-status`) is still the shipped mod. The layout also names `leddt-files` in `link_handlers`, for Ctrl-clicks on Markdown files and images in terminals.
 
 A mod pane, like `leddt-review`'s Findings, has no folder of its own. When one is focused, Files, Changes, the "New Split Tab" button and the pane header's split buttons use the folder of the first terminal in its tab instead of falling back to the space's. A mod pane can also name its own folder in the shared value `leddt.pane-folders` (`{ [pane]: folder }`), which comes before its tab's terminal. Herdr's own tab creation (the terminal and agent buttons, the ⋯ menu, shortcuts) still starts in the space's folder.

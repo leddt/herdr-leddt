@@ -231,6 +231,10 @@
     14,
     12
   ],
+  "border": {
+    "width": 1,
+    "color": "border"
+  },
   "divider": {
     "width": 1,
     "color": "border"
