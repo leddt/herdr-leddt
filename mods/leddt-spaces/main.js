@@ -246,6 +246,15 @@ async function pickFile(start) {
   return file ? file.replace(/\\/g, "/") : null;
 }
 
+// Keep the whole leading emoji in the avatar (the shipped spaces and picker do the same;
+// leddt-agents shows the one published in leddt-spaces.avatars).
+// Newer pictographs such as 🖥 may be drawn as emoji without VS16. A trailing
+// selector, modifier or joiner can signal that we matched only part of a glyph.
+const EMOJI = /^(?:[#*0-9]\uFE0F?\u20E3|\p{Regional_Indicator}{2}|(?:\p{Emoji_Presentation}|(?=[\u{1F000}-\u{1FFFF}])\p{Extended_Pictographic}|\p{Extended_Pictographic}(?=\uFE0F)|\p{Emoji_Modifier_Base}(?=\p{Emoji_Modifier}))\uFE0F?[\p{Emoji_Modifier}\u{E0020}-\u{E007F}]*(?:\u200D\p{Extended_Pictographic}\uFE0F?\p{Emoji_Modifier}?)*)(?![\p{Grapheme_Extend}\p{Emoji_Modifier}\u200D])/u;
+function spaceAvatar(name) {
+  return EMOJI.exec(name)?.[0] ?? ([...name][0]?.toUpperCase() ?? "?");
+}
+
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -752,7 +761,7 @@ export default class Spaces extends View {
     const icon = src ? this.icons[src.key] : null;
     const avatar = icon
       ? image(icon).size(18).flex_none().rounded(4)
-      : h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
+      : h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(spaceAvatar(w.name));
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
@@ -834,7 +843,7 @@ export default class Spaces extends View {
       all[s.id] = {
         icon: (src && this.icons[src.key]) || null,
         fill: color.startsWith("#") ? color : (MARK[color] ?? t[color]),
-        letter: [...s.name][0]?.toUpperCase() ?? "?",
+        letter: spaceAvatar(s.name),
       };
     }
     const json = JSON.stringify(all);
