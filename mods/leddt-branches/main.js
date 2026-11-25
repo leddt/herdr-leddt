@@ -6,7 +6,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, notify, openOverlay, nextCommand, shared } from "herdr";
+import { spaces, panes, focused, exec, watchFolder, theme, notify, openOverlay, nextCommand, shared, window } from "herdr";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -32,6 +32,18 @@ const plural = (n) => `${n} commit${n === 1 ? "" : "s"}`;
 // without either the list still shows, with no counts. The worktree path comes
 // last: it's the only field that could hold a tab.
 const format = (counted) => ["%(refname)", "%(HEAD)", counted ? "%(ahead-behind:HEAD)" : "", "%(upstream:short)", "%(upstream:track,nobracket)", "%(symref)", "%(committerdate:relative)", "%(worktreepath)"].join("%09");
+
+// Whether a change in the git folder can change the list: refs, HEAD (here or in a
+// worktree), packed refs, a fetch, the config (remotes, upstreams). Not the index or
+// objects, which every git command in a terminal touches. The folder itself, or a
+// path outside it, means "anything may have changed".
+function touchesBranches(dir, path) {
+  const base = dir.replace(/\\/g, "/").replace(/\/+$/, ""), p = path.replace(/\\/g, "/");
+  if (p === base || !p.startsWith(`${base}/`)) return true;
+  const rel = p.slice(base.length + 1);
+  return /^(HEAD|ORIG_HEAD|FETCH_HEAD|packed-refs|config)(\.lock)?$/.test(rel) || rel.startsWith("refs/")
+    || /^worktrees(\/[^/]+(\/HEAD(\.lock)?)?)?$/.test(rel);
+}
 
 function parse(out, remotes, counted) {
   const list = [];
@@ -90,33 +102,61 @@ export default class Branches extends View {
       }
     });
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    // Checked often, run rarely: see refreshIfDue.
+    cx.timer.every(500, (cx) => this.refreshIfDue(cx));
+  }
+
+  // The shipped Files and Changes' pacing (Herdr 0.1.18): nothing while the window
+  // isn't active (caught up when it is again), a change seen by the watch waits as
+  // long as the last read's cost asks, and a poll as a safety net: every 10s
+  // without a watch (a remote space), every minute with one.
+  refreshIfDue(cx) {
+    const active = window()?.active !== false, refocused = active && this.windowActive === false;
+    this.windowActive = active;
+    if (!this.context) return;
+    if (refocused && (this.dirtyAt || !this.watched)) this.catchUp = true;
+    if (!active || this.loading || this.busy) return;
+    const now = Date.now();
+    if (this.catchUp || (this.dirtyAt && now >= this.watchAt) || now >= this.pollAt) this.refresh(cx);
   }
 
   // The repo's own git folder (a worktree shares it): refs, HEAD and fetches land there.
   watch(dir, cx) {
-    if (this.on || this.watched === dir) return;
-    this.watched = dir;
+    if (this.on || this.watched?.dir === dir) return;
+    this.watched?.pending?.cancel();
+    const watch = { dir };
+    this.watched = watch;
     cx.spawn(async (cx) => {
       try {
-        while (this.watched === dir) {
-          await watchFolder(dir);
-          if (this.watched === dir) this.refresh(cx);
+        while (this.watched === watch) {
+          watch.pending = watchFolder(dir);
+          const paths = await watch.pending;
+          if (this.watched === watch && paths.some((p) => touchesBranches(dir, p))) {
+            this.dirtyAt = Date.now();
+            this.refreshIfDue(cx);
+          }
         }
-      } catch { if (this.watched === dir) this.watched = null; }
+      } catch { if (this.watched === watch) this.watched = null; }
     });
   }
 
-  refresh(cx) {
-    // Asked while busy: once more when that ends, so nothing it changed is missed.
-    if (this.loading || this.busy) { this.again = true; return; }
-    const { cwd, on } = location(), context = key();
-    if (context !== this.context) {
+  // force: right after an action of ours, even with the window inactive.
+  refresh(cx, force = false) {
+    const { cwd, on } = location(), context = key(), visiting = context !== this.context;
+    if (visiting) {
+      this.watched?.pending?.cancel();
       this.context = context; this.root = null; this.branches = []; this.remotes = []; this.current = null; this.head = null;
       this.selected = null; this.renaming = null; this.pending = null; this.error = null; this.note = null; this.watched = null;
+      this.dirtyAt = 0; this.catchUp = false; this.loading = false;
     }
-    if (!cwd) return;
-    this.loading = true; this.again = false;
+    const now = Date.now();
+    if (!cwd) { this.dirtyAt = 0; this.catchUp = false; this.pollAt = now + 10000; return; }
+    // Asked while busy: once more when that ends, so nothing it changed is missed.
+    if (this.loading || this.busy) { if (force) this.catchUp = true; return; }
+    if (!visiting && !force && window()?.active === false) return;
+    this.loading = true; this.catchUp = false;
+    this.pollAt = this.watchAt = now + 10000;
+    const started = now;
     cx.spawn(async (cx) => {
       try {
         const top = await exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, on });
@@ -140,8 +180,16 @@ export default class Branches extends View {
         this.loadDetail(cx);
       } catch (e) { if (key() === context) this.error = String(e?.message ?? e); }
       finally {
-        this.loading = false;
-        if (this.again) this.refresh(cx);
+        if (this.context === context) {
+          this.loading = false;
+          // A slow read (a big repo, a remote machine) waits five times as long before the next.
+          const finished = Date.now(), took = finished - started;
+          const delay = took < 500 ? 0 : Math.min(60000, 5 * took);
+          this.watchAt = finished + delay;
+          this.pollAt = finished + Math.max(this.watched ? 60000 : 10000, delay);
+          // A change seen during the read may not be in it: that one stays due.
+          if (this.dirtyAt && this.dirtyAt < started) this.dirtyAt = 0;
+        }
         cx.notify();
       }
     });
@@ -185,7 +233,7 @@ export default class Branches extends View {
     cx.spawn(async (cx) => {
       try { await work(git); }
       catch (e) { if (key() === context) this.note = `${label} failed: ${e?.message ?? e}`; }
-      finally { this.busy = null; this.refresh(cx); cx.notify(); }
+      finally { this.busy = null; this.refresh(cx, true); cx.notify(); }
     });
     cx.notify();
   }
@@ -410,6 +458,7 @@ export default class Branches extends View {
 
   render(cx) {
     if (key() !== this.context) this.refresh(cx);
+    else this.refreshIfDue(cx);
     const t = theme(), cur = this.current;
     const locals = this.branches.filter((b) => !b.remote);
     const remotes = [...new Set(this.branches.filter((b) => b.remote).map((b) => b.remote))].sort();

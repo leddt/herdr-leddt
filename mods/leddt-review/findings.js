@@ -13,7 +13,7 @@
 // Props: { session }.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand, settings } from "herdr";
+import { props, theme, run, exec, terminals, panes, focused, notify, shared, setShared, openOverlay, watchFolder, nextCommand, settings, window } from "herdr";
 import {
   BUSY_BACK, PANES, loadState, saveState, readJson, sessionDir, statePath, archiveDir,
   reportTask, triageTask, fixTask, verifyTask, loopTask,
@@ -60,10 +60,15 @@ export class Findings {
     this.saving = Promise.resolve();
     // "list", or "diff": the findings as comments on the lines they're about.
     try { this.mode = localStorage.getItem("findings-view") === "diff" ? "diff" : "list"; } catch { this.mode = "list"; }
-    this.diff = null; this.diffTick = 0;
-    // The code changes under the diff view (a fix, the person's edits): reread it now and then.
-    // Not while a load is running: a slow one would chain straight into the next.
-    cx.timer.every(15000, (cx) => { if (this.mode === "diff" && !this.closed && !this.diffLoading) { this.diffTick++; cx.notify(); } });
+    this.diff = null; this.diffTick = 0; this.diffAt = Date.now();
+    // The code changes under the diff view (a fix, the person's edits): reread it every 15s.
+    // Not while a load is running: a slow one would chain straight into the next. Not while
+    // the window isn't active either; the next check after it is again catches up.
+    cx.timer.every(1000, (cx) => {
+      if (this.mode !== "diff" || this.closed || this.diffLoading || window()?.active === false) return;
+      if (Date.now() - this.diffAt < 15000) return;
+      this.diffAt = Date.now(); this.diffTick++; cx.notify();
+    });
     cx.spawn(async (cx) => {
       this.s = await loadState(this.id);
       if (!this.s) { this.missing = true; cx.notify(); return; }
