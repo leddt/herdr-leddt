@@ -1,6 +1,6 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
-// leddt: a space's menu also picks its avatar (leddt-spaces' icon commands).
+// leddt: a space's menu also picks its avatar (leddt-spaces' icon commands) and its group (Group…).
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
 // a command "worktree" opens the worktree dialog instead.
 
@@ -70,6 +70,7 @@ function items(p, git) {
       const to = (what) => `leddt-spaces.icon-${what}:${encodeURIComponent(tg.id)}`;
       return [
         ["Rename", "space.rename", { id: tg.id }],
+        ["Group…", `leddt-spaces.group:${encodeURIComponent(tg.id)}`, {}],
         ["Choose icon…", to("pick"), {}],
         ...(icon ? [["Use project icon", to("auto"), {}]] : []),
         ...(icon !== "letter" ? [["Use letter avatar", to("letter"), {}]] : []),
@@ -92,6 +93,7 @@ function items(p, git) {
 
 function menuIcon(command) {
   if (command.startsWith("leddt-spaces.icon-")) return "mods/leddt-menu/image.svg";
+  if (command.startsWith("leddt-spaces.group:")) return "mods/workspace-chrome/folder.svg";
   const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }

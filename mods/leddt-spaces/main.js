@@ -6,8 +6,8 @@
 // switch, right-click for its menu, drag to reorder.
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, home, appHome, nextCommand } from "herdr";
+import { v_flex, h_flex, ScrollHandle, InputState, Input } from "gpui-base";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, home, appHome, nextCommand, props, closeOverlay } from "herdr";
 import * as fs from "fs/promises";
 
 function find(node, id) {
@@ -259,6 +259,25 @@ function spaceAvatar(name) {
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
+// Groups of spaces, made from a space's menu (Group…) or the folder button in the
+// header: { list: [{ id, name }], of: { [space]: group } }. A worktree under its
+// checkout follows the checkout's group. Folded groups are this screen's (localStorage).
+const GROUPS = "leddt-spaces.groups";
+function groupsOf() {
+  const g = shared(GROUPS);
+  const list = Array.isArray(g?.list) ? g.list.filter((x) => x && typeof x.id === "string") : [];
+  const of = g?.of && typeof g.of === "object" && !Array.isArray(g.of) ? g.of : {};
+  return { list, of };
+}
+// Puts a space in a group (null: in none).
+function setGroup(space, group) {
+  const g = groupsOf();
+  const of = { ...g.of };
+  if (group) of[space] = group;
+  else delete of[space];
+  setShared(GROUPS, { list: g.list, of });
+}
+
 // A space speaks up only when something in it needs you.
 export function glyph(status) {
   return status === "blocked" || status === "done" ? "●" : "·";
@@ -270,6 +289,12 @@ export function tone(t, status) {
 
 export default class Spaces extends View {
   init(_props, cx) {
+    // The group popups and the name dialog are this mod too, opened as overlays.
+    const p = props();
+    if (p?.groupName) return this.initGroupName(cx);
+    if (p?.groupMenu || p?.groupHead) return;
+    try { this.groupFolded = new Set(JSON.parse(localStorage.getItem("groups.folded") ?? "[]")); } catch { this.groupFolded = new Set(); }
+    this.localSeen = new Set(); // this computer's spaces seen since start: a group forgets one only once it's gone
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
@@ -304,13 +329,115 @@ export default class Spaces extends View {
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // Refresh only when the refs could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
-    // The space menu's icon items (leddt-menu): "icon-<pick|auto|letter>:<space>".
+    // The space menu's items (leddt-menu): "icon-<pick|auto|letter>:<space>", "group:<space>".
     cx.spawn(async (cx) => {
       for (;;) {
-        const m = /^icon-(pick|auto|letter):(.+)$/.exec(await nextCommand());
+        const c = await nextCommand();
+        const m = /^icon-(pick|auto|letter):(.+)$/.exec(c);
         if (m) await this.setIcon(m[1], decodeURIComponent(m[2]), cx);
+        const g = /^group:(.+)$/.exec(c);
+        if (g) openOverlay({ mod: "leddt-spaces", kind: "popup", width: 220, height: 360, props: { groupMenu: { space: decodeURIComponent(g[1]) } } });
       }
     });
+  }
+
+  initGroupName(cx) {
+    const { groupName: n } = props();
+    const current = n.group ? groupsOf().list.find((g) => g.id === n.group)?.name ?? "" : "";
+    this.text = current;
+    this.input = InputState.new({ value: current, placeholder: "Group name" });
+    if (current) this.input.set_selected_range({ start: 0, end: current.length });
+    this.input.on("change", (_e, cx) => { this.text = this.input.value(); cx.notify(); });
+    this.input.on("submit", (_e, cx) => this.submitGroupName(cx));
+    this.input.focus();
+    cx.timer.after(600, () => this.input.focus());
+    this.handle = cx.focus_handle();
+  }
+
+  // Renames the group, or makes a new one (with the space it was asked from in it).
+  submitGroupName() {
+    const { groupName: n, overlay } = props();
+    const name = (this.text ?? "").replace(/\s+/g, " ").trim();
+    closeOverlay(overlay);
+    if (!name) return;
+    const g = groupsOf();
+    if (n.group) {
+      setShared(GROUPS, { list: g.list.map((x) => (x.id === n.group ? { ...x, name } : x)), of: g.of });
+      return;
+    }
+    const id = `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    setShared(GROUPS, { list: [...g.list, { id, name }], of: n.space ? { ...g.of, [n.space]: id } : g.of });
+  }
+
+  groupNameDialog(t) {
+    const p = props();
+    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12.5).font_medium().cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    const renaming = Boolean(p.groupName.group);
+    return v_flex().id("group-name").track_focus(this.handle)
+      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
+      .w_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
+      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(renaming ? "Rename group" : "New group"))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(div().pt(16).pb(7).text_size(11.5).text_color(t.dim).child("Name"))
+      .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
+      .child(h_flex().pt(20).gap(8).justify_end()
+        .child(button("gn-cancel", "Cancel", false, () => closeOverlay(p.overlay)))
+        .child(button("gn-save", renaming ? "Rename" : "Create", true, () => this.submitGroupName())));
+  }
+
+  // A small menu of [label, icon, action, checked?] items; null draws a separator.
+  popupMenu(t, title, items) {
+    const close = () => closeOverlay(props().overlay);
+    return v_flex().w_full().p(5).bg(t.popover).text_size(12.8)
+      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(title))
+      .children(items.map((it, i) => !it
+        ? div().mx(7).my(4).h(1).bg(t.border)
+        : h_flex().id(`gm-${i}`).h(31).px(8).gap(9).rounded(7).items_center().text_color(t.foreground)
+          .hover((s) => s.bg(t.hover))
+          .on_click(() => { close(); it[2](); })
+          .child(svg(`mods/workspace-chrome/${it[1]}.svg`).size(14).flex_none().text_color(t.muted))
+          .child(div().flex_1().min_w(0).truncate().child(it[0]))
+          .when(Boolean(it[3]), (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
+  }
+
+  // A space's Group… menu: its groups, a new one, out of its group.
+  groupMenu(t) {
+    const { space } = props().groupMenu;
+    const { list, of } = groupsOf();
+    const now = list.some((g) => g.id === of[space]) ? of[space] : null;
+    const name = spaces().find((s) => s.id === space)?.name ?? "Space";
+    return this.popupMenu(t, `Group ${name}`, [
+      ...list.map((g) => [g.name, "folder", () => setGroup(space, g.id === now ? null : g.id), g.id === now]),
+      ...(list.length ? [null] : []),
+      ["New group…", "folder-plus", () => openOverlay({ mod: "leddt-spaces", kind: "dialog", width: 380, height: 190, props: { groupName: { space } } })],
+      ...(now ? [["Remove from group", "x", () => setGroup(space, null)]] : []),
+    ]);
+  }
+
+  // A group header's menu: rename, move, delete (its spaces stay, out of any group).
+  groupHeadMenu(t) {
+    const { group } = props().groupHead;
+    const g = groupsOf();
+    const at = g.list.findIndex((x) => x.id === group);
+    if (at < 0) return v_flex();
+    const move = (by) => () => {
+      const list = [...g.list];
+      list.splice(at + by, 0, list.splice(at, 1)[0]);
+      setShared(GROUPS, { list, of: g.of });
+    };
+    return this.popupMenu(t, g.list[at].name, [
+      ["Rename…", "square-pen", () => openOverlay({ mod: "leddt-spaces", kind: "dialog", width: 380, height: 190, props: { groupName: { group } } })],
+      ...(at > 0 ? [["Move up", "chevron-left", move(-1)]] : []),
+      ...(at < g.list.length - 1 ? [["Move down", "chevron-right", move(1)]] : []),
+      null,
+      ["Delete group", "x", () => setShared(GROUPS, {
+        list: g.list.filter((x) => x.id !== group),
+        of: Object.fromEntries(Object.entries(g.of).filter(([, v]) => v !== group)),
+      })],
+    ]);
   }
 
   async setIcon(what, id, cx) {
@@ -584,7 +711,7 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "leddt-menu", kind: "popup", width: 200, height: 340, props: { tab: "space", target: { id: w.id } } });
+    openOverlay({ mod: "leddt-menu", kind: "popup", width: 200, height: 380, props: { tab: "space", target: { id: w.id } } });
   }
 
   orderingDue(now) {
@@ -600,7 +727,7 @@ export default class Spaces extends View {
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null, cwd: place(w, ps) }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
-    const out = [];
+    let out = [];
     const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
     for (const r of list) {
       if (nested(r)) continue;
@@ -610,6 +737,18 @@ export default class Spaces extends View {
       const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
       kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
     }
+    // Within each machine: spaces in no group first, then each group's, in the groups' order.
+    // A worktree under its checkout goes with it.
+    const { list: groups, of } = groupsOf();
+    const rank = new Map(groups.map((g, n) => [g.id, n]));
+    const machineAt = new Map();
+    let group = null;
+    out = out.map((r, n) => {
+      if (!r.tree) group = rank.has(of[r.w.id]) ? of[r.w.id] : null;
+      const m = r.w.machine ?? null;
+      if (!machineAt.has(m)) machineAt.set(m, machineAt.size);
+      return { ...r, group, n, m: machineAt.get(m), g_at: group ? rank.get(group) : -1 };
+    }).sort((a, b) => a.m - b.m || a.g_at - b.g_at || a.n - b.n);
     // Simulate the batch so later indexes include earlier moves. An attempted
     // write can lose a sync conflict: allow the echo to settle before retrying.
     const order = sp.map(w => w.id);
@@ -649,8 +788,9 @@ export default class Spaces extends View {
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     if (!remote.length) {
       if (loading(null) && !rows.length) return [loadingRow(null)];
-      this.activeAt = rows.findIndex(r => r.w.active);
-      return rows.map(draw);
+      const { items, active } = this.withGroups(rows, rows, null, collapsed, t, draw);
+      this.activeAt = active;
+      return items;
     }
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
@@ -707,12 +847,101 @@ export default class Spaces extends View {
             .text_size(11).text_color(t.foreground).bg(t.raised).cursor_pointer().hover(s => s.bg(t.hover))
             .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
             .child(this.copiedLogin === login ? "Copied" : "Copy")))] : [];
-      const items = [cell(head), ...guidance, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
-      const first = folded ? -1 : mine.findIndex(r => r.w.active);
-      if (first >= 0) this.activeAt = before + 1 + guidance.length + first;
+      const sec = folded || !mine.length ? null : this.withGroups(mine, rows, m, collapsed, t, draw);
+      const items = [cell(head), ...guidance, ...(folded ? [] : sec ? sec.items : [loading(m) ? loadingRow(m) : cell(empty)])];
+      if (sec?.active >= 0) this.activeAt = before + 1 + guidance.length + sec.active;
       before += items.length;
       return items;
     });
+  }
+
+  // One machine's rows (`mine`), each group's under its header; `active`: where the active space
+  // (or its folded group's header) lands among `items`. A group with no space on any machine
+  // shows on this computer, so it can take a dragged space.
+  withGroups(mine, rows, m, collapsed, t, draw) {
+    const items = [];
+    let active = -1;
+    const add = (r) => { if (r.w.active) active = items.length; items.push(draw(r)); };
+    mine.filter((r) => !r.group).forEach(add);
+    for (const g of groupsOf().list) {
+      const kids = mine.filter((r) => r.group === g.id);
+      if (!kids.length && (m !== null || rows.some((r) => r.group === g.id))) continue;
+      const folded = this.groupFolded.has(g.id);
+      const holds = kids.some((r) => r.w.active);
+      if (folded && holds) active = items.length;
+      items.push(this.groupHead(g, kids.length, folded, holds, m, collapsed, t));
+      if (!folded) kids.forEach(add);
+    }
+    return { items, active };
+  }
+
+  // A group's header: click folds it, right-click for its menu, drop a space on it to put it there.
+  // Drag a header onto another to put the group there.
+  groupHead(g, count, folded, holds, m, collapsed, t) {
+    const target = `group:${g.id}`;
+    const dropping = this.pressed !== null && this.over === target;
+    const list = groupsOf().list;
+    const at = list.findIndex((x) => x.id === g.id);
+    const fromAt = this.pressedGroup ? list.findIndex((x) => x.id === this.pressedGroup) : -1;
+    const lands = fromAt >= 0 && this.overGroup === g.id && fromAt !== at;
+    const el = h_flex().id(`group-${m ?? "local"}-${g.id}`).relative().flex_none().items_center().cursor_pointer()
+      .when(dropping, (el) => el.bg(t.hover).border_1().border_color(t.accent))
+      .when(!dropping, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(this.pressedGroup === g.id && this.overGroup && this.overGroup !== g.id, (el) => el.opacity(0.5))
+      .when(lands, (el) => el.child(div().absolute().left(0).right(0).h(2).bg(t.accent)
+        .when(fromAt < at, (line) => line.bottom(0))
+        .when(fromAt > at, (line) => line.top(0))))
+      .on_mouse_down("left", () => { this.pressedGroup = g.id; this.overGroup = g.id; })
+      .on_click((_e, cx) => {
+        this.groupFolded.has(g.id) ? this.groupFolded.delete(g.id) : this.groupFolded.add(g.id);
+        localStorage.setItem("groups.folded", JSON.stringify([...this.groupFolded]));
+        cx.notify();
+      })
+      .on_mouse_down("right", () => openOverlay({ mod: "leddt-spaces", kind: "popup", width: 200, height: 220, props: { groupHead: { group: g.id } } }))
+      .on_mouse_move((_e, cx) => {
+        if (this.pressedGroup && this.overGroup !== g.id) { this.overGroup = g.id; cx.notify(); }
+        if (this.pressed === null) return;
+        const source = spaces().find((s) => s.id === this.pressed);
+        const over = source && (source.machine ?? null) === m ? target : null;
+        if (this.over !== over) { this.over = over; cx.notify(); }
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        const fromGroup = this.pressedGroup;
+        this.pressedGroup = null;
+        this.overGroup = null;
+        if (fromGroup && fromGroup !== g.id) {
+          const now = groupsOf();
+          const from = now.list.findIndex((x) => x.id === fromGroup);
+          const to = now.list.findIndex((x) => x.id === g.id);
+          if (from >= 0 && to >= 0) {
+            const list = [...now.list];
+            list.splice(to, 0, list.splice(from, 1)[0]);
+            setShared(GROUPS, { list, of: now.of });
+          }
+          cx.stop_propagation();
+          cx.notify();
+          return;
+        }
+        const from = this.pressed;
+        if (from !== null && this.over === target) {
+          this.pressed = null;
+          this.over = null;
+          setGroup(from, g.id);
+          cx.stop_propagation();
+          cx.notify();
+        }
+      });
+    if (collapsed) {
+      return railCell(el.w(RAIL_CELL).h(folded ? 20 : 12).mt(4).rounded(6).justify_center()
+        .tooltip(`${g.name} (${count})${folded ? " · folded" : ""}`)
+        .child(folded
+          ? svg("mods/workspace-chrome/folder.svg").size(12).text_color(holds ? t.foreground : t.dim)
+          : div().w(16).h(1).bg(t.border)));
+    }
+    return el.h(26).mt(6).px(8).gap(7).rounded(7).text_size(11.5).text_color(holds && folded ? t.foreground : t.dim)
+      .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(13).flex_none())
+      .child(div().flex_1().min_w(0).truncate().font_medium().child(g.name))
+      .child(div().flex_none().text_size(11).child(String(count)));
   }
 
   // The second line: the branch (the repo when detached), else the folder; then ahead/behind.
@@ -750,7 +979,7 @@ export default class Spaces extends View {
       .child(`#${pr.number}`);
   }
 
-  row({ w, i, g, tree, cwd }, t) {
+  row({ w, i, g, tree, cwd, group }, t) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
@@ -783,6 +1012,8 @@ export default class Spaces extends View {
         this.over = w.id;
       })
       .on_mouse_move((_e, cx) => {
+        // A group dragged over a space: no longer over a header, so it won't land.
+        if (this.pressedGroup && this.overGroup) { this.overGroup = null; cx.notify(); }
         const source = spaces().find(s => s.id === this.pressed);
         const over = source && (source.machine ?? null) === (w.machine ?? null) ? w.id : null;
         if (this.pressed !== null && this.over !== over) {
@@ -796,6 +1027,9 @@ export default class Spaces extends View {
         this.pressed = null;
         this.over = null;
         if (from !== null && over === w.id && from !== w.id) {
+          // Dropped among another group's spaces: it joins that group.
+          const of = groupsOf().of;
+          if ((of[from] ?? null) !== (group ?? null)) setGroup(from, group);
           const index = spaces().findIndex(s => s.id === w.id);
           if (index !== -1) run("space.move", { id: from, index: index + 1 });
         } else if (from === w.id) run("space.select", { id: w.id });
@@ -854,6 +1088,10 @@ export default class Spaces extends View {
 
   render() {
     const t = theme();
+    const p = props();
+    if (p?.groupName) return this.groupNameDialog(t);
+    if (p?.groupMenu) return this.groupMenu(t);
+    if (p?.groupHead) return this.groupHeadMenu(t);
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
@@ -868,6 +1106,11 @@ export default class Spaces extends View {
     }
     if (changed) setShared("space.colors", kept);
     this.publishAvatars(sp, kept, t);
+    // A closed space leaves its group (only this computer's: another machine's may just be away).
+    for (const s of sp) if (!s.machine) this.localSeen.add(s.id);
+    const grouped = groupsOf();
+    const gone = Object.keys(grouped.of).filter((id) => this.localSeen.has(id) && !ids.has(id));
+    if (gone.length) setShared(GROUPS, { list: grouped.list, of: Object.fromEntries(Object.entries(grouped.of).filter(([id]) => !gone.includes(id))) });
     const list = this.grouped(t, collapsed);
     // Bring the active space into view when it, or its place in the list, changes; a row already in view stays put.
     const active = sp.find(p => p.active)?.id;
@@ -879,13 +1122,17 @@ export default class Spaces extends View {
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
-        .when(!collapsed, el => el.child("Spaces"))
+        .when(!collapsed, el => el.child(div().flex_1().child("Spaces"))
+          .child(div().id("group-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
+            .tooltip("New group")
+            .on_click(() => openOverlay({ mod: "leddt-spaces", kind: "dialog", width: 380, height: 190, props: { groupName: {} } }))
+            .child(svg("mods/workspace-chrome/folder-plus.svg").size(14))))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
         // A block above (another mod's) growing, or the window resizing, shrinks this list and can push the active space out.
         .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedGroup = null; this.overGroup = null; cx.notify(); })
         .children(list));
   }
 }
