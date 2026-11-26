@@ -2,12 +2,17 @@
 // It follows the file as it changes, and a link to another .md file opens it here (← goes back).
 // leddt-files reuses it for another file: leddt-preview.show { [props.id]: { file, on, at } }.
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, TextView } from "gpui-base";
-import { props, readTextFile, watchFolder, exec, theme, window, notify, shared } from "herdr";
+import { v_flex, h_flex, TextView, Editor, EditorState } from "gpui-base";
+import { props, readTextFile, watchFolder, exec, theme, window, notify, shared, settings } from "herdr";
 
 const SHOW = "leddt-preview.show";
 
 const MAX = 400000;
+// Code blocks: font size, and line height in pixels (the editor's own, for a block's height).
+const CODE_SIZE = 13, CODE_LINE = 21;
+// The editor lets its text scroll past the end by about half its own height. It's made twice as tall
+// as its code (plus a few lines), and clipped to the code, so it has nothing to scroll.
+const codeHeight = (lines) => (lines * 2 + 4) * CODE_LINE;
 const dirname = (p) => p.replace(/[\\/][^\\/]*$/, "");
 const basename = (p) => p.split(/[\\/]/).pop();
 // Joins a relative link to a folder, folding "." and "..".
@@ -47,6 +52,35 @@ function frontmatter(text) {
   };
   const table = ["| Key | Value |", "| --- | --- |", ...rows.map(r => `| ${plain(r.key)} | ${value(r)} |`)];
   return { table: table.join("\n"), body: text.slice(m[0].length) };
+}
+
+// Splits the body into Markdown runs and fenced code blocks that name a language ({ code, lang }),
+// so those are drawn by a read-only Editor with syntax colours. Only fences indented 0-3 spaces count
+// (a block inside a list item stays Markdown); a fence without a language stays Markdown too.
+const LANG = { ts: "js", typescript: "js", tsx: "js", jsx: "js", javascript: "js", mjs: "js", cjs: "js", mts: "js", cts: "js",
+  jsonc: "json", json5: "json", yml: "yaml", toml: "yaml", svelte: "html", vue: "html", xml: "html", htm: "html",
+  py: "python", rb: "ruby", rs: "rust", sh: "bash", shell: "bash", zsh: "bash", console: "bash", golang: "go",
+  "c#": "csharp", cs: "csharp", "c++": "cpp", hpp: "cpp", cc: "cpp", h: "c", md: "markdown", patch: "diff", makefile: "make" };
+function segments(text) {
+  const out = [], lines = text.split("\n");
+  let md = [];
+  const flush = () => { if (md.length) out.push({ md: md.join("\n") }); md = []; };
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^( {0,3})(`{3,}|~{3,})[ \t]*\{?\.?([\w#+-]*)[^`]*$/.exec(lines[i].replace(/\r$/, ""));
+    if (!open) { md.push(lines[i]); continue; }
+    const [, indent, fence, lang] = open;
+    const close = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
+    let end = i + 1;
+    while (end < lines.length && !close.test(lines[end].replace(/\r$/, ""))) end++;
+    if (!lang) { md.push(...lines.slice(i, end + 1)); i = end; continue; }
+    flush();
+    const code = lines.slice(i + 1, end).map(l => l.replace(/\r$/, "").replace(new RegExp(`^ {0,${indent.length}}`), ""));
+    const name = lang.toLowerCase();
+    out.push({ code: code.join("\n"), lang: LANG[name] ?? name });
+    i = end;
+  }
+  flush();
+  return out;
 }
 
 function openExternal(url) {
@@ -96,10 +130,27 @@ export default class Markdown extends View {
         if (text !== this.text) {
           this.text = text; this.error = null;
           this.shown = frontmatter(text.length > MAX ? text.slice(0, MAX) + "\n\n… (file truncated)" : text);
+          this.parts = this.codeViews(segments(this.shown.body));
         }
       } catch (e) { if (this.file === file) this.error = `Cannot read this file: ${e}`; }
       finally { cx.notify(); }
     });
+  }
+
+  // Gives each code block an editor, reusing the previous one for a block that didn't change.
+  codeViews(parts) {
+    const old = (this.parts ?? []).filter(p => p.state);
+    const t = theme(), font = settings().font_family;
+    for (const p of parts) {
+      if (p.md !== undefined) continue;
+      const at = old.findIndex(o => o.lang === p.lang && o.code === p.code);
+      if (at >= 0) { p.state = old.splice(at, 1)[0].state; continue; }
+      p.state = EditorState.new({ language: p.lang, value: p.code, readonly: true, line_numbers: false, folding: false,
+        ...(font ? { font_family: font } : {}), font_size: CODE_SIZE,
+        syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+    }
+    for (const p of old) p.state.release();
+    return parts;
   }
 
   // Watches the file's folder (local only) and reads the file again when it changes.
@@ -145,7 +196,11 @@ export default class Markdown extends View {
                 .child(this.fmOpen ? "▾" : "▸").child("Frontmatter"))
               .when(this.fmOpen, el => el.child(div().px(10).pb(10).border_t(1).border_color(t.border).pt(10)
                 .child(TextView.markdown(`md-fm-${this.file}`, this.shown.table).selectable(true))))))
-            .child(TextView.markdown(`md-${this.file}`, this.shown.body).selectable(true).on_link_click((url, cx) => this.link(url, cx)))
+            .children(this.parts.map((p, i) => p.state
+              ? div().my(8).px(10).py(8).rounded(6).border(1).border_color(t.border).flex_none()
+                  .child(div().h(p.code.split("\n").length * CODE_LINE).overflow_hidden()
+                    .child(Editor.new(p.state).w_full().h(codeHeight(p.code.split("\n").length))))
+              : TextView.markdown(`md-${this.file}-${i}`, p.md).selectable(true).on_link_click((url, cx) => this.link(url, cx))))
         : div().p(16).text_size(12).text_color(t.dim).child(this.error || "Loading…"));
   }
 }
